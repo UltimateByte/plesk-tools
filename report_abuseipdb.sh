@@ -1,14 +1,37 @@
 #!/bin/bash
-# Authors: Original script from brother4 (Plesk community forum) ; heavily reworked by LRob - www.lrob.fr
+# Authors: Original script from brother4 (Plesk community forum), reworked by LRob - www.lrob.fr
 # Description: Reports IPs banned by fail2ban on a Plesk server to AbuseIPDB
 # Requires: Plesk server, and AbuseIPDB API key
-# Version: 0.2
+# Version: 0.3
+
+###### SETTINGS ######
 
 # Your AbuseIPDB API key
 api_key=""
 
-# File where already reported ips are stored
+# File where already reported IPs are stored
+# Set to empty for permanently re-reporting IPs that are still banned
 reported_ips_file="/var/log/reported_ips.log"
+
+# Set sleep time to ease the API
+sleeptime="0.1"
+
+# Declare jails, categories, and comments in a single array
+# You may edit according to your own jails
+declare -A jail_info
+jail_info=(
+  ["plesk-apache"]="21|Apache web server attack detected by Fail2Ban in plesk-apache jail"
+  ["plesk-apache-badbot"]="19|Bad web bot activity detected by Fail2Ban in plesk-apache-badbot jail"
+  ["plesk-dovecot"]="18|POP or IMAP failed login attempts detected by Fail2Ban in plesk-dovecot jail"
+  ["plesk-modsecurity"]="21|WAF repeated trigger detected by Fail2Ban in plesk-modsecurity jail"
+  ["plesk-panel"]="21|Plesk panel brute-force detected by Fail2Ban in plesk-panel jail"
+  ["plesk-postfix"]="11,18|SMTP brute-force detected by Fail2Ban in plesk-postfix jail"
+  ["plesk-proftpd"]="5|FTP brute-force attack detected by Fail2Ban in plesk-proftpd jail"
+  ["plesk-roundcube"]="11,18|Roundcube brute-force detected by Fail2Ban in plesk-roundcube jail"
+  ["plesk-wordpress"]="18,21|WordPress login brute-force detected by Fail2Ban in plesk-wordpress jail"
+  ["recidive"]="15|Repeated attacks detected by Fail2Ban in recidive jail"
+  ["ssh"]="18,22|SSH abuse or brute-force attack detected by Fail2Ban in ssh jail"
+)
 
 # Categories documentation
 # Source : https://www.abuseipdb.com/categories
@@ -37,54 +60,56 @@ reported_ips_file="/var/log/reported_ips.log"
 # 22  SSH                  Secure Shell (SSH) abuse. Use this category in combination with more specific categories.
 # 23  IoT Targeted         Abuse was targeted at an "Internet of Things" type device. Include information about what type of device was targeted in the comments.
 
-# If the file doesn't exist, create it
-[ ! -f "${reported_ips_file}" ] && touch "${reported_ips_file}"
+###### SCRIPT ######
 
-# Declare jails, categories, and comments in a single array
-# You may edit according to your own jails
-declare -A jail_info
-jail_info=(
-  ["plesk-apache"]="21|Apache web server attack detected by Fail2Ban in plesk-apache jail"
-  ["plesk-apache-badbot"]="19|Bad web bot activity detected by Fail2Ban in plesk-apache-badbot jail"
-  ["plesk-dovecot"]="18|POP or IMAP failed login attempts detected by Fail2Ban in plesk-dovecot jail"
-  ["plesk-modsecurity"]="21|WAF repeated trigger detected by Fail2Ban in plesk-modsecurity jail"
-  ["plesk-panel"]="21|Plesk panel brute-force detected by Fail2Ban in plesk-panel jail"
-  ["plesk-postfix"]="11,18|SMTP brute-force detected by Fail2Ban in plesk-postfix jail"
-  ["plesk-proftpd"]="5|FTP brute-force attack detected by Fail2Ban in plesk-proftpd jail"
-  ["plesk-roundcube"]="11,18|Roundcube brute-force detected by Fail2Ban in plesk-roundcube jail"
-  ["plesk-wordpress"]="18,21|WordPress login brute-force detected by Fail2Ban in plesk-wordpress jail"
-  ["recidive"]="15|Repeated attacks detected by Fail2Ban in recidive jail"
-  ["ssh"]="18,22|SSH abuse or brute-force attack detected by Fail2Ban in ssh jail"
-)
+# Check if API key is set
+if [ -z "${api_key}" ]; then
+  echo "API key is missing. Please set your AbuseIPDB API key."
+  exit 1
+fi
+
+# If log file is defined and the log file doesn't exist, create it
+if [ -n "${reported_ips_file}" ]; then
+  [ ! -f "${reported_ips_file}" ] && touch "${reported_ips_file}"
+fi
+
+# Function to report an IP to AbuseIPDB
+report_ip() {
+  response=$(curl -sS -X POST https://api.abuseipdb.com/api/v2/report \
+    -H "Key: ${api_key}" \
+    -H "Accept: application/json" \
+    -d "ip=${ip}&categories=${categories}&comment=${comment}")
+
+  if echo "${response}" | grep -qi "error"; then
+    echo "Error reporting IP ${ip}: ${response}"
+    return 1
+  fi
+  
+  # Append the IP to the file if "reported_ips_file" is set
+  if [ -f "${reported_ips_file}" ]; then
+    echo "${ip}" >> "${reported_ips_file}"
+  fi
+  return 0
+}
 
 # Iterate over all jails
 for jail in "${!jail_info[@]}"; do
   # Get categories and comment from the jail_info array
-  categories=$(echo "${jail_info[${jail}]}" | cut -d'|' -f1)
-  comment=$(echo "${jail_info[${jail}]}" | cut -d'|' -f2)
+  categories="${jail_info[$jail]%%|*}"
+  comment="${jail_info[$jail]#*|}"
 
-  # Get banned ips for the current jail
+  # Get banned IPs for the current jail
   banned_ips=$(fail2ban-client status "${jail}" | awk -F "Banned IP list:" '{print $2}' | xargs)
 
-  # If "banned_ips" does not contain "ERROR", then the jail exists and is active, continue
-  if [[ "${banned_ips}" != *"ERROR"* ]]; then
-    # Iterate over all banned ips
+  # Continue if found banned IPs  (banned_ips not empty) and jail is enabled (no ERROR is returned)
+  if [[ -n "${banned_ips}" && "${banned_ips}" != *"ERROR"* ]]; then
+
+    # Iterate over all banned IPs
     for ip in ${banned_ips}; do
-      # Check if the ip was already reported
-      if ! grep -q "^${ip}$" "${reported_ips_file}"; then
-        # Report the IP to AbuseIPDB with categories and comment
-        response=$(curl -sS -X POST https://api.abuseipdb.com/api/v2/report \
-          -H "Key: ${api_key}" \
-          -H "Accept: application/json" \
-          -d "ip=${ip}&categories=${categories}&comment=${comment}")
-  
-        # Optionally check if there's an error in the response
-        if echo "${response}" | grep -qi "error"; then
-            echo "Error reporting IP ${ip}: ${response}"
-        fi
-  
-        # Add the IP to the list of reported IPs
-        echo "${ip}" >> "${reported_ips_file}"
+      # Report the IP if "reported_ips_file" is unset (re-report mode), or if the IP has not been reported yet
+      if [ -z "${reported_ips_file}" ] || ! grep -q "^${ip}$" "${reported_ips_file}"; then
+        report_ip
+        sleep "${sleeptime}"
       fi
     done
   fi
