@@ -1,5 +1,7 @@
 #!/bin/bash
 # Authors: Original script from brother4 (Plesk community forum) ; heavily reworked by LRob - www.lrob.fr
+# Description: Reports IPs banned by fail2ban on a Plesk server to AbuseIPDB
+# Requires: Plesk server, and AbuseIPDB API key
 # Version: 0.2
 
 # Your AbuseIPDB API key
