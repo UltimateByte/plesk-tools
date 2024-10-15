@@ -1,7 +1,6 @@
 #!/bin/bash
-# Credit: Original idea from brother4 (Plesk community forum) ; reworked by LRob
-# Website: www.lrob.fr
-# v0.1 - Initial Commit, not tested yet
+# Authors: Original script from brother4 (Plesk community forum) ; heavily reworked by LRob - www.lrob.fr
+# Version: 0.2
 
 # Your AbuseIPDB API key
 api_key=""
@@ -40,7 +39,7 @@ reported_ips_file="/var/log/reported_ips.log"
 [ ! -f "${reported_ips_file}" ] && touch "${reported_ips_file}"
 
 # Declare jails, categories, and comments in a single array
-# You may add your own or edit according to your own jails
+# You may edit according to your own jails
 declare -A jail_info
 jail_info=(
   ["plesk-apache"]="21|Apache web server attack detected by Fail2Ban in plesk-apache jail"
@@ -65,23 +64,26 @@ for jail in "${!jail_info[@]}"; do
   # Get banned ips for the current jail
   banned_ips=$(fail2ban-client status "${jail}" | awk -F "Banned IP list:" '{print $2}' | xargs)
 
-  # Iterate over all banned ips
-  for ip in ${banned_ips}; do
-    # Check if the ip was already reported
-    if ! grep -q "^${ip}$" "${reported_ips_file}"; then
-      # Report the IP to AbuseIPDB with categories and comment
-      response=$(curl -sS -X POST https://api.abuseipdb.com/api/v2/report \
-        -H "Key: ${api_key}" \
-        -H "Accept: application/json" \
-        -d "ip=${ip}&categories=${categories}&comment=${comment}")
-
-      # Optionally check if there's an error in the response
-      if echo "${response}" | grep -qi "error"; then
-          echo "Error reporting IP ${ip}: ${response}"
+  # If "banned_ips" does not contain "ERROR", then the jail exists and is active, continue
+  if [[ "${banned_ips}" != *"ERROR"* ]]; then
+    # Iterate over all banned ips
+    for ip in ${banned_ips}; do
+      # Check if the ip was already reported
+      if ! grep -q "^${ip}$" "${reported_ips_file}"; then
+        # Report the IP to AbuseIPDB with categories and comment
+        response=$(curl -sS -X POST https://api.abuseipdb.com/api/v2/report \
+          -H "Key: ${api_key}" \
+          -H "Accept: application/json" \
+          -d "ip=${ip}&categories=${categories}&comment=${comment}")
+  
+        # Optionally check if there's an error in the response
+        if echo "${response}" | grep -qi "error"; then
+            echo "Error reporting IP ${ip}: ${response}"
+        fi
+  
+        # Add the IP to the list of reported IPs
+        echo "${ip}" >> "${reported_ips_file}"
       fi
-
-      # Add the IP to the list of reported IPs
-      echo "${ip}" >> "${reported_ips_file}"
-    fi
-  done
+    done
+  fi
 done
