@@ -2,7 +2,7 @@
 # Authors: Original script from brother4 (Plesk community forum), reworked by LRob - www.lrob.fr
 # Description: Reports IPs banned by fail2ban on a Plesk server to AbuseIPDB
 # Requires: Plesk server, and AbuseIPDB API key
-# Version: 0.3
+# Version: 0.4
 
 ###### SETTINGS ######
 
@@ -99,7 +99,7 @@ for jail in "${!jail_info[@]}"; do
   comment="${jail_info[$jail]#*|}"
 
   # Get banned IPs for the current jail
-  banned_ips=$(fail2ban-client status "${jail}" | awk -F "Banned IP list:" '{print $2}' | xargs)
+  banned_ips=$(fail2ban-client status "${jail}" 2>/dev/null | awk -F "Banned IP list:" '{print $2}' | xargs)
 
   # Continue if found banned IPs  (banned_ips not empty) and jail is enabled (no ERROR is returned)
   if [[ -n "${banned_ips}" && "${banned_ips}" != *"ERROR"* ]]; then
