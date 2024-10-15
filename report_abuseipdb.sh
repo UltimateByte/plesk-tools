@@ -52,8 +52,8 @@ jail_info=(
   ["plesk-postfix"]="11,18|SMTP brute-force detected by Fail2Ban in plesk-postfix jail"
   ["plesk-proftpd"]="5|FTP brute-force attack detected by Fail2Ban in plesk-proftpd jail"
   ["plesk-roundcube"]="11,18|Roundcube brute-force detected by Fail2Ban in plesk-roundcube jail"
-  ["plesk-wordpress"]="21|Web app attack detected by Fail2Ban in plesk-wordpress jail"
-  ["recidive"]="18|Repeated brute-force attacks detected by Fail2Ban in recidive jail"
+  ["plesk-wordpress"]="18,21|WordPress login brute-force detected by Fail2Ban in plesk-wordpress jail"
+  ["recidive"]="15|Repeated attacks detected by Fail2Ban in recidive jail"
   ["ssh"]="18,22|SSH abuse or brute-force attack detected by Fail2Ban in ssh jail"
 )
 
