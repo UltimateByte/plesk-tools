@@ -2,7 +2,7 @@
 # Authors: LRob - www.lrob.fr
 # Description: Uses SSH to delzone a domain using rndc on multiple servers (slave DNS). Useful when Plesk doesn't remove them for any reason.
 # Requires: Root Access via SSH key, does not require Plesk, works on any DNS server
-# Version: 0.1
+# Version: 0.2
 
 # Define the name servers and domain
 name_servers=("ns1.example.net" "ns2.example.net" "ns3.example.net")
@@ -18,6 +18,6 @@ fi
 # Loop through each name server and execute the rndc command
 for ns in "${name_servers[@]}"; do
     # Run the rndc command on the remote name server
-    echo "Name Server: ${ns}"
+    echo "[ ${ns} ]"
     ssh "root@${ns}" "rndc delzone -clean ${domain}"
 done
