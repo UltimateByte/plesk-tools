@@ -1,2 +1,2 @@
 # plesk-tools
-Anything you might need for Plesk servers
+Tools that may come handy for managing Plesk servers
