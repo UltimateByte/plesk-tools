@@ -2,7 +2,7 @@
 # Authors: Original script from brother4 (Plesk community forum), reworked by LRob - www.lrob.fr
 # Description: Reports IPs banned by fail2ban on a Plesk server to AbuseIPDB
 # Requires: Plesk server, and AbuseIPDB API key
-# Version: 0.4
+# Version: 1.0
 
 ###### SETTINGS ######
 
@@ -31,6 +31,9 @@ jail_info=(
   ["plesk-wordpress"]="18,21|WordPress login brute-force detected by Fail2Ban in plesk-wordpress jail"
   ["recidive"]="15|Repeated attacks detected by Fail2Ban in recidive jail"
   ["ssh"]="18,22|SSH abuse or brute-force attack detected by Fail2Ban in ssh jail"
+  ["custom-403"]="19|Repeated 403 errors, blocked by Fail2ban in custom-403 jail"
+  ["custom-404"]="19|Repeated 404 errors, blocked by Fail2ban in custom-404 jail"
+  ["custom-503-xmlrpc"]="19,21|Repeated requests on blocked xmlrpc.php, blocked by fail2ban in custom-503-xmlrpc jail"
 )
 
 # Categories documentation
@@ -58,7 +61,7 @@ jail_info=(
 # 20  Exploited Host       Host is likely infected with malware and being used for other attacks or to host malicious content. The host owner may not be aware of the compromise. This category is often used in combination with other attack categories.
 # 21  Web App Attack       Attempts to probe for or exploit installed web applications such as a CMS like WordPress/Drupal, e-commerce solutions, forum software, phpMyAdmin and various other software plugins/solutions.
 # 22  SSH                  Secure Shell (SSH) abuse. Use this category in combination with more specific categories.
-# 23  IoT Targeted         Abuse was targeted at an "Internet of Things" type device. Include information about what type of device was targeted in the comments.
+# 23  IoT Targeted         Abuse was targeted at an Internet of Things type device. Include information about what type of device was targeted in the comments.
 
 ###### SCRIPT ######
 
@@ -68,49 +71,60 @@ if [ -z "${api_key}" ]; then
   exit 1
 fi
 
-# If log file is defined and the log file doesn't exist, create it
-if [ -n "${reported_ips_file}" ]; then
-  [ ! -f "${reported_ips_file}" ] && touch "${reported_ips_file}"
+# Create reported IPs logfile
+if [ -n "${reported_ips_file}" ] && [ ! -f "${reported_ips_file}" ]; then
+  touch "${reported_ips_file}"
 fi
 
-# Function to report an IP to AbuseIPDB
-report_ip() {
-  response=$(curl -sS -X POST https://api.abuseipdb.com/api/v2/report \
-    -H "Key: ${api_key}" \
-    -H "Accept: application/json" \
-    -d "ip=${ip}&categories=${categories}&comment=${comment}")
+# Variables declaration
+declare -A current_bans
+declare -A reported_bans
+updated_log=()
 
-  if echo "${response}" | grep -qi "error"; then
-    echo "Error reporting IP ${ip}: ${response}"
-    return 1
-  fi
-  
-  # Append the IP to the file if "reported_ips_file" is set
-  if [ -f "${reported_ips_file}" ]; then
-    echo "${ip}" >> "${reported_ips_file}"
-  fi
-  return 0
-}
-
-# Iterate over all jails
+# 1. Gather current banned IPs per jail
 for jail in "${!jail_info[@]}"; do
-  # Get categories and comment from the jail_info array
-  categories="${jail_info[$jail]%%|*}"
-  comment="${jail_info[$jail]#*|}"
-
-  # Get banned IPs for the current jail
   banned_ips=$(fail2ban-client status "${jail}" 2>/dev/null | awk -F "Banned IP list:" '{print $2}' | xargs)
-
-  # Continue if found banned IPs  (banned_ips not empty) and jail is enabled (no ERROR is returned)
   if [[ -n "${banned_ips}" && "${banned_ips}" != *"ERROR"* ]]; then
-
-    # Iterate over all banned IPs
     for ip in ${banned_ips}; do
-      # Report the IP if "reported_ips_file" is unset (re-report mode), or if the IP has not been reported yet
-      if [ -z "${reported_ips_file}" ] || ! grep -q "^${ip}$" "${reported_ips_file}"; then
-        report_ip
-        sleep "${sleeptime}"
-      fi
+      current_bans["${ip}|${jail}"]=1
     done
   fi
 done
+
+# 2. Load reported log and retain only entries still relevant
+if [ -f "${reported_ips_file}" ]; then
+  while IFS= read -r line; do
+    reported_bans["${line}"]=1
+    if [[ -n "${current_bans[${line}]}" ]]; then
+      updated_log+=("${line}")
+    fi
+  done < "${reported_ips_file}"
+fi
+
+# 3. Report new IPs not yet reported
+for combo in "${!current_bans[@]}"; do
+  if [[ -z "${reported_bans[${combo}]}" ]]; then
+    ip="${combo%%|*}"
+    jail="${combo##*|}"
+    categories="${jail_info[${jail}]%%|*}"
+    comment="${jail_info[${jail}]#*|}"
+
+    response=$(curl -sS -X POST https://api.abuseipdb.com/api/v2/report \
+      -H "Key: ${api_key}" \
+      -H "Accept: application/json" \
+      -d "ip=${ip}&categories=${categories}&comment=${comment}")
+
+    if echo "${response}" | grep -qi "error"; then
+      echo "Error reporting ${ip} (jail: ${jail}): ${response}"
+    else
+      #echo "Reported ${ip} (jail: ${jail})"
+      updated_log+=("${combo}")
+      sleep "${sleeptime}"
+    fi
+  fi
+done
+
+# 4. Write updated log back
+if [ -n "${reported_ips_file}" ]; then
+  printf "%s\n" "${updated_log[@]}" > "${reported_ips_file}"
+fi
