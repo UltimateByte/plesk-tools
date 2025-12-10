@@ -12,7 +12,7 @@ set -euo pipefail
 # -----------------------------------------------------------------------------
 CURL_TIMEOUT=10
 OUTPUT_FORMAT="simple"  # simple, csv, json
-OUTPUT_FILE="/root/domains-list"
+OUTPUT_FILE="/root/uptime-kuma-domains-list"
 
 # -----------------------------------------------------------------------------
 # Functions
