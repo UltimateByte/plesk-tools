@@ -12,7 +12,7 @@ set -euo pipefail
 # -----------------------------------------------------------------------------
 CURL_TIMEOUT=10
 OUTPUT_FORMAT="simple"  # simple, csv, json
-OUTPUT_FILE="/root/uptime-kuma-domains-list"
+OUTPUT_FILE="/root/domains-list"
 
 # -----------------------------------------------------------------------------
 # Functions
@@ -22,7 +22,7 @@ OUTPUT_FILE="/root/uptime-kuma-domains-list"
 is_domain_active() {
     local domain="$1"
     local status
-    status=$(plesk bin domain -i "$domain" 2>/dev/null | grep -E "^Domain status:" | awk -F: '{print $2}' | xargs)
+    status=$(plesk bin domain -i "$domain" 2>/dev/null | grep -E "^Domain status:" | awk -F: '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     [[ "$status" == "OK" ]]
 }
 
