@@ -21,8 +21,8 @@ USERNAME = ""
 PASSWORD = ""
 JWT_FILE = "/opt/uptime-kuma-sync/jwt_token"
 
-DOMAINS_FILE = "/root/domains-list"
-PARENT_GROUP_ID = 8
+DOMAINS_FILE = "/root/uptime-kuma-domains-list"
+PARENT_GROUP_ID = 1
 
 # Monitor settings
 MONITOR_INTERVAL = 60
