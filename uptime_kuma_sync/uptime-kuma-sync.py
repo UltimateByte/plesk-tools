@@ -32,7 +32,7 @@ MONITOR_MAX_RETRIES = 1
 MONITOR_MAX_REDIRECTS = 10
 
 # Default notification IDs to attach (empty = none, or list like [1, 2])
-DEFAULT_NOTIFICATION_IDS = []
+DEFAULT_NOTIFICATION_IDS = [1]
 
 # -----------------------------------------------------------------------------
 # Globals
