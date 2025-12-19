@@ -6,7 +6,6 @@
 #
 #   Author: Robin Labadie - https://www.lrob.fr
 #   License: MIT
-#   Repository: https://github.com/lmusic/plesk-php-switcher
 #
 #===============================================================================
 
