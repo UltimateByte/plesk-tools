@@ -71,7 +71,8 @@ check_plesk() {
 #-------------------------------------------------------------------------------
 
 get_available_handlers() {
-    plesk bin php_handler --list 2>/dev/null | grep -oP 'plesk-php\d+-\S+' | sort -u
+    plesk bin php_handler --list 2>/dev/null | \
+        awk '/^[[:space:]]*plesk-php[0-9]+-/ && /enabled$/ {print $1}' | sort -u
 }
 
 get_used_handlers() {
