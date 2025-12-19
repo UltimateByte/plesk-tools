@@ -150,17 +150,28 @@ show_available_handlers() {
 
 select_handler() {
     local prompt="$1"
-    local allow_any="${2:-false}"
+    local source_mode="${2:-false}"
 
     local handlers
-    handlers=$(get_available_handlers)
+    if [[ "$source_mode" == "true" ]]; then
+        handlers=$(get_used_handlers)
+    else
+        handlers=$(get_available_handlers)
+    fi
+
     local handlers_array=()
 
     while IFS= read -r handler; do
+        [[ -z "$handler" ]] && continue
         handlers_array+=("$handler")
     done <<< "$handlers"
 
     local count=${#handlers_array[@]}
+
+    if [[ $count -eq 0 ]]; then
+        print_error "No handlers found" >&2
+        exit 1
+    fi
 
     echo -e "${CYAN}${prompt}${NC}" >&2
     echo "" >&2
@@ -314,11 +325,11 @@ show_menu() {
         3)
             echo ""
             local source target
-            source=$(select_handler "Select SOURCE handler (to migrate FROM):")
+            source=$(select_handler "Select SOURCE handler (to migrate FROM):" true)
             echo ""
             print_info "Source: ${source}"
             echo ""
-            target=$(select_handler "Select TARGET handler (to migrate TO):")
+            target=$(select_handler "Select TARGET handler (to migrate TO):" false)
             echo ""
             print_info "Target: ${target}"
 
@@ -332,7 +343,7 @@ show_menu() {
         4)
             echo ""
             local handler
-            handler=$(select_handler "Select handler to list domains:")
+            handler=$(select_handler "Select handler to list domains:" true)
             echo ""
             echo -e "${YELLOW}═══ Domains using ${handler} ═══${NC}"
             echo ""
