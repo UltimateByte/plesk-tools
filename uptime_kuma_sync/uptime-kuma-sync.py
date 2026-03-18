@@ -42,6 +42,15 @@ def on_monitor_list(data):
     monitor_list = data
 
 
+notification_list = {}
+
+
+@sio.on("notificationList")
+def on_notification_list(data):
+    global notification_list
+    notification_list = data
+
+
 # -----------------------------------------------------------------------------
 # Authentication
 # -----------------------------------------------------------------------------
@@ -276,6 +285,28 @@ def cmd_cleanup(dry_run=False):
     print(f"\nDeleted: {deleted} monitor(s)")
 
 
+def cmd_info():
+    """List available groups and notifications to help with setup."""
+    # Groups (monitors of type "group")
+    print("=== Available monitor groups ===")
+    groups_found = False
+    for monitor_id, monitor in monitor_list.items():
+        if monitor.get("type") == "group":
+            print(f"  ID: {int(monitor_id):3d}  Name: {monitor['name']}")
+            groups_found = True
+    if not groups_found:
+        print("  No groups found. Create a group in Uptime Kuma first.")
+
+    # Notifications
+    print("\n=== Available notifications ===")
+    if notification_list:
+        for notif in notification_list:
+            if isinstance(notif, dict):
+                print(f"  ID: {notif.get('id', '?'):3d}  Name: {notif.get('name', 'unnamed')}  Type: {notif.get('type', '?')}")
+    else:
+        print("  No notifications found. Create a notification in Uptime Kuma first.")
+
+
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
@@ -283,7 +314,7 @@ def main():
     global config
 
     parser = argparse.ArgumentParser(description="Uptime Kuma sync (called by wrapper)")
-    parser.add_argument("--action", required=True, choices=["sync", "list", "cleanup"])
+    parser.add_argument("--action", required=True, choices=["sync", "list", "cleanup", "info"])
     parser.add_argument("--config", required=True, help="JSON config string")
     parser.add_argument("--dry-run", action="store_true", help="Preview only")
 
@@ -305,7 +336,9 @@ def main():
     time.sleep(1)
 
     try:
-        if args.action == "sync":
+        if args.action == "info":
+            cmd_info()
+        elif args.action == "sync":
             cmd_sync(dry_run=args.dry_run)
         elif args.action == "list":
             cmd_list()
