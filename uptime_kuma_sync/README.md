@@ -34,7 +34,7 @@ chmod +x /opt/uptime-kuma-sync/uptime-kuma-sync.sh
 /opt/uptime-kuma-sync/uptime-kuma-sync.sh --install
 ```
 
-The installer will prompt for your Uptime Kuma URL, credentials, parent group ID, and notification IDs. These are saved to `/opt/uptime-kuma-sync/.env` and can be edited later.
+The installer will prompt for your Uptime Kuma URL and credentials, then connect to list available monitor groups and notifications so you can pick the right IDs. These are saved to `/opt/uptime-kuma-sync/.env` and can be edited later.
 
 Additional settings (monitoring intervals, exclusion patterns, cron schedule) can be adjusted in the `.env` file:
 
@@ -63,6 +63,7 @@ uptime-kuma-sync [OPTION]
 | `--list` | List existing monitors in the Uptime Kuma group |
 | `--cleanup` | Remove obsolete monitors |
 | `--cleanup --dry-run` | Preview monitors that would be removed |
+| `--info` | Show available groups and notifications in Uptime Kuma |
 | `--cron` | Install a cron job (sync + cleanup, daily at 10am by default) |
 | `--uncron` | Remove the cron job |
 
