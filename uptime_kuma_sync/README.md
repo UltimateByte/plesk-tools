@@ -34,20 +34,12 @@ chmod +x /opt/uptime-kuma-sync/uptime-kuma-sync.sh
 /opt/uptime-kuma-sync/uptime-kuma-sync.sh --install
 ```
 
-Edit the generated config file:
+The installer will prompt for your Uptime Kuma URL, credentials, parent group ID, and notification IDs. These are saved to `/opt/uptime-kuma-sync/.env` and can be edited later.
+
+Additional settings (monitoring intervals, exclusion patterns, cron schedule) can be adjusted in the `.env` file:
 
 ```bash
 nano /opt/uptime-kuma-sync/.env
-```
-
-Variables to set:
-
-```bash
-UPTIME_KUMA_URL="https://your-uptime-kuma-instance.com"
-USERNAME="admin"
-PASSWORD="your-password"
-PARENT_GROUP_ID=1            # Parent group ID in Uptime Kuma
-DEFAULT_NOTIFICATION_IDS="1" # Notification IDs (space-separated)
 ```
 
 Then run:
