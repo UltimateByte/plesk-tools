@@ -134,4 +134,4 @@ Logs are written to `/opt/uptime-kuma-sync/uptime-kuma-sync.log` with automatic 
 
 ## License
 
-MIT
+GNU General Public License v3.0
