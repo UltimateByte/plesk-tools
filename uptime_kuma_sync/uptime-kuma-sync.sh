@@ -224,7 +224,17 @@ list_plesk_domains() {
     fi
 
     local raw
+    # Main domains with seo redirect preference
     raw=$(plesk db -Ne "SELECT d.name, COALESCE(p.val, 'none') FROM domains d LEFT JOIN dom_param p ON d.id = p.dom_id AND p.param = 'seoRedirect' WHERE d.status = 0 AND d.htype = 'vrt_hst'" | cat)
+
+    # Domain aliases with web hosting enabled
+    local aliases
+    aliases=$(plesk db -Ne "SELECT da.name, 'none' FROM domain_aliases da JOIN domains d ON da.dom_id = d.id WHERE da.status = 0 AND da.web = 'true' AND d.status = 0" | cat)
+
+    # Merge both lists
+    if [[ -n "$aliases" ]]; then
+        raw=$(printf '%s\n%s' "$raw" "$aliases")
+    fi
 
     : > "$DOMAINS_FILE"
     local count=0
@@ -250,7 +260,7 @@ list_plesk_domains() {
         count=$((count + 1))
     done <<< "$raw"
 
-    log "Found $count domains ($excluded excluded)"
+    log "Found $count domains + aliases ($excluded excluded)"
 }
 
 # -----------------------------------------------------------------------------
