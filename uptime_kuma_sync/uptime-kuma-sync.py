@@ -55,21 +55,27 @@ def authenticate():
         print("ERROR: No username/password configured")
         sys.exit(1)
 
-    print("  Authenticating...")
-    response = call_with_callback("login", {
-        "username": username,
-        "password": password,
-        "token": ""
-    })
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        print(f"  Authenticating (attempt {attempt}/{max_retries})...")
+        response = call_with_callback("login", {
+            "username": username,
+            "password": password,
+            "token": ""
+        }, timeout=10)
 
-    if response and response.get("ok"):
-        print("  Login successful")
-        authenticated = True
-        return True
-    else:
-        msg = response.get("msg", "Unknown error") if response else "No response"
-        print(f"ERROR: Authentication failed: {msg}")
-        sys.exit(1)
+        if response and response.get("ok"):
+            print("  Login successful")
+            authenticated = True
+            return True
+
+        if attempt < max_retries:
+            print("  Retrying...")
+            time.sleep(2)
+
+    msg = response.get("msg", "Unknown error") if response else "No response (timeout)"
+    print(f"ERROR: Authentication failed after {max_retries} attempts: {msg}")
+    sys.exit(1)
 
 
 def call_with_callback(event, data, timeout=30):
@@ -270,6 +276,7 @@ def main():
         sys.exit(1)
 
     authenticate()
+    print("  Loading monitors...")
     time.sleep(1)
 
     try:
