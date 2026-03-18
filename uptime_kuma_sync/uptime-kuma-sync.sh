@@ -216,7 +216,7 @@ list_plesk_domains() {
 
         # Skip excluded patterns
         if [[ -n "$EXCLUDE_PATTERN" ]] && echo "$domain" | grep -qE "$EXCLUDE_PATTERN"; then
-            ((excluded++))
+            excluded=$((excluded + 1))
             continue
         fi
 
@@ -228,7 +228,7 @@ list_plesk_domains() {
         fi
 
         echo "$domain $seo_redirect $url" >> "$DOMAINS_FILE"
-        ((count++))
+        count=$((count + 1))
     done <<< "$raw"
 
     log "Found $count domains ($excluded excluded)"
