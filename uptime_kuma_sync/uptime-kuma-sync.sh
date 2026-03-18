@@ -186,12 +186,16 @@ cmd_update() {
     # Re-download Python script
     download_python_script
 
-    # Update self
+    # Update self (download to temp then mv for atomic replace)
     log "Downloading latest bash script..."
-    if curl -fsSL "$GITHUB_RAW/uptime-kuma-sync.sh" -o "$SELF_SCRIPT"; then
-        chmod +x "$SELF_SCRIPT"
+    local tmp
+    tmp=$(mktemp)
+    if curl -fsSL "$GITHUB_RAW/uptime-kuma-sync.sh" -o "$tmp"; then
+        chmod +x "$tmp"
+        mv "$tmp" "$SELF_SCRIPT"
         log "Bash script updated"
     else
+        rm -f "$tmp"
         log "WARNING: Failed to download bash script update"
     fi
 
