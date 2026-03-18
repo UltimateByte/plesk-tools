@@ -31,12 +31,13 @@ A single bash script handles everything: installation, updates, Plesk domain lis
 mkdir -p /opt/uptime-kuma-sync
 curl -fsSL https://raw.githubusercontent.com/UltimateByte/plesk-tools/main/uptime_kuma_sync/uptime-kuma-sync.sh -o /opt/uptime-kuma-sync/uptime-kuma-sync.sh
 chmod +x /opt/uptime-kuma-sync/uptime-kuma-sync.sh
+/opt/uptime-kuma-sync/uptime-kuma-sync.sh --install
 ```
 
-Edit the configuration section at the top of the script:
+Edit the generated config file:
 
 ```bash
-nano /opt/uptime-kuma-sync/uptime-kuma-sync.sh
+nano /opt/uptime-kuma-sync/.env
 ```
 
 Variables to set:
@@ -49,13 +50,11 @@ PARENT_GROUP_ID=1            # Parent group ID in Uptime Kuma
 DEFAULT_NOTIFICATION_IDS="1" # Notification IDs (space-separated)
 ```
 
-Then run any command — the Python venv and dependencies will be installed automatically on first run:
+Then run:
 
 ```bash
-/opt/uptime-kuma-sync/uptime-kuma-sync.sh --sync --dry-run
+uptime-kuma-sync --sync --dry-run
 ```
-
-A symlink `/usr/local/bin/uptime-kuma-sync` is created automatically.
 
 ## Usage
 
@@ -65,8 +64,8 @@ uptime-kuma-sync [OPTION]
 
 | Option | Description |
 |---|---|
-| `--install` | Set up the Python venv, dependencies, and Python script |
-| `--update` | Re-download scripts from GitHub (preserves config) |
+| `--install` | Set up the Python venv, dependencies, and config file |
+| `--update` | Re-download scripts from GitHub (preserves `.env`) |
 | `--sync` | List Plesk domains and create missing monitors |
 | `--sync --dry-run` | Preview what would be created without making changes |
 | `--list` | List existing monitors in the Uptime Kuma group |
@@ -97,13 +96,13 @@ Set up daily automation at 10am:
 uptime-kuma-sync --cron
 ```
 
-The schedule is configurable via the `CRON_SCHEDULE` variable at the top of the script (default: `0 10 * * *`).
+The schedule is configurable via `CRON_SCHEDULE` in `.env` (default: `0 10 * * *`).
 
 ## Domain exclusions
 
-Domains matching the `EXCLUDE_PATTERN` regex are skipped. Default: `\.plesk\.page$`.
+Domains matching the `EXCLUDE_PATTERN` regex in `.env` are skipped. Default: `\.plesk\.page$`.
 
-To exclude additional patterns, edit the variable. Example excluding `.plesk.page` and `staging.*`:
+To exclude additional patterns, edit `.env`. Example excluding `.plesk.page` and `staging.*`:
 
 ```bash
 EXCLUDE_PATTERN="\.(plesk\.page)$|^staging\."
@@ -115,18 +114,19 @@ EXCLUDE_PATTERN="\.(plesk\.page)$|^staging\."
 uptime-kuma-sync --update
 ```
 
-Re-downloads scripts from GitHub and injects the existing configuration into the new version.
+Re-downloads scripts from GitHub. The `.env` config file is never overwritten.
 
 ## Logs
 
-Logs are written to `/opt/uptime-kuma-sync/uptime-kuma-sync.log` with automatic rotation. Retention is configurable via `LOG_RETENTION_DAYS` (default: 30 days).
+Logs are written to `/opt/uptime-kuma-sync/uptime-kuma-sync.log` with automatic rotation. Retention is configurable via `LOG_RETENTION_DAYS` in `.env` (default: 30 days).
 
 ## File structure
 
 ```
 /opt/uptime-kuma-sync/
-├── uptime-kuma-sync.sh   # Main script (config + orchestration)
+├── uptime-kuma-sync.sh   # Main script (orchestration)
 ├── uptime-kuma-sync.py   # Python script (Socket.io communication)
+├── .env                  # Configuration (credentials, settings)
 ├── venv/                 # Python virtual environment
 ├── domains-list          # Plesk domain list (auto-generated)
 └── uptime-kuma-sync.log  # Logs
