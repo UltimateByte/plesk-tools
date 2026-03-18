@@ -20,23 +20,7 @@ import socketio
 sio = socketio.Client()
 monitor_list = {}
 authenticated = False
-jwt_token = None
 config = {}
-
-
-# -----------------------------------------------------------------------------
-# JWT Management
-# -----------------------------------------------------------------------------
-def load_jwt():
-    path = Path(config["jwt_file"])
-    if path.exists():
-        return path.read_text().strip()
-    return None
-
-
-def save_jwt(token):
-    Path(config["jwt_file"]).write_text(token)
-    print(f"  JWT saved to {config['jwt_file']}")
 
 
 # -----------------------------------------------------------------------------
@@ -62,27 +46,16 @@ def on_monitor_list(data):
 # Authentication
 # -----------------------------------------------------------------------------
 def authenticate():
-    global authenticated, jwt_token
-
-    jwt_token = load_jwt()
-    if jwt_token:
-        print("  Attempting JWT authentication...")
-        response = call_with_callback("loginByToken", jwt_token)
-        if response and response.get("ok"):
-            print("  JWT authentication successful")
-            authenticated = True
-            return True
-        else:
-            print("  JWT expired or invalid, falling back to password")
+    global authenticated
 
     username = config.get("username", "")
     password = config.get("password", "")
 
     if not username or not password:
-        print("ERROR: No valid JWT and no username/password configured")
+        print("ERROR: No username/password configured")
         sys.exit(1)
 
-    print("  Authenticating with username/password...")
+    print("  Authenticating...")
     response = call_with_callback("login", {
         "username": username,
         "password": password,
@@ -92,9 +65,6 @@ def authenticate():
     if response and response.get("ok"):
         print("  Login successful")
         authenticated = True
-        if response.get("token"):
-            save_jwt(response["token"])
-            jwt_token = response["token"]
         return True
     else:
         msg = response.get("msg", "Unknown error") if response else "No response"
