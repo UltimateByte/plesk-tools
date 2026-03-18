@@ -139,6 +139,9 @@ CRON_SCHEDULE="0 10 * * *"
 
 # Log retention in days
 LOG_RETENTION_DAYS=30
+
+# Login timeout in seconds per attempt (3 attempts max)
+LOGIN_TIMEOUT=15
 ENVEOF
 
         chmod 600 "$ENV_FILE"
@@ -268,12 +271,13 @@ run_python() {
     "monitor_retry_interval": $MONITOR_RETRY_INTERVAL,
     "monitor_timeout": $MONITOR_TIMEOUT,
     "monitor_max_retries": $MONITOR_MAX_RETRIES,
-    "monitor_max_redirects": $MONITOR_MAX_REDIRECTS
+    "monitor_max_redirects": $MONITOR_MAX_REDIRECTS,
+    "login_timeout": ${LOGIN_TIMEOUT:-15}
 }
 PYEOF
 )
 
-    "$VENV_DIR/bin/python" "$PYTHON_SCRIPT" --action "$action" --config "$config_json" "$@" 2>&1 | tee -a "$LOG_FILE"
+    "$VENV_DIR/bin/python" -u "$PYTHON_SCRIPT" --action "$action" --config "$config_json" "$@" 2>&1 | tee -a "$LOG_FILE"
 }
 
 # -----------------------------------------------------------------------------
