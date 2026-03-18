@@ -44,7 +44,6 @@ INSTALL_DIR="/opt/uptime-kuma-sync"
 PYTHON_SCRIPT="$INSTALL_DIR/uptime-kuma-sync.py"
 VENV_DIR="$INSTALL_DIR/venv"
 DOMAINS_FILE="$INSTALL_DIR/domains-list"
-JWT_FILE="$INSTALL_DIR/jwt_token"
 LOG_FILE="$INSTALL_DIR/uptime-kuma-sync.log"
 SELF_SCRIPT="$INSTALL_DIR/uptime-kuma-sync.sh"
 
@@ -248,7 +247,6 @@ run_python() {
     "url": "$UPTIME_KUMA_URL",
     "username": "$USERNAME",
     "password": "$PASSWORD",
-    "jwt_file": "$JWT_FILE",
     "domains_file": "$DOMAINS_FILE",
     "parent_group_id": $PARENT_GROUP_ID,
     "notification_ids": [$(echo "$DEFAULT_NOTIFICATION_IDS" | tr ' ' ',')],
