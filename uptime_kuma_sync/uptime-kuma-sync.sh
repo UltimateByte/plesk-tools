@@ -9,38 +9,10 @@
 set -euo pipefail
 
 # -----------------------------------------------------------------------------
-# Configuration - Edit these values
-# -----------------------------------------------------------------------------
-UPTIME_KUMA_URL="https://your-uptime-kuma-instance.com"
-USERNAME=""
-PASSWORD=""
-
-# Uptime Kuma monitor group parent ID
-PARENT_GROUP_ID=1
-
-# Default notification IDs to attach (space-separated, e.g., "1 2 3")
-DEFAULT_NOTIFICATION_IDS="1"
-
-# Monitor defaults
-MONITOR_INTERVAL=60
-MONITOR_RETRY_INTERVAL=60
-MONITOR_TIMEOUT=30
-MONITOR_MAX_RETRIES=1
-MONITOR_MAX_REDIRECTS=10
-
-# Domain exclusion patterns (grep -E pattern, matched against domain name)
-EXCLUDE_PATTERN="\.plesk\.page$"
-
-# Cron schedule (used by --cron)
-CRON_SCHEDULE="0 10 * * *"
-
-# Log retention in days
-LOG_RETENTION_DAYS=30
-
-# -----------------------------------------------------------------------------
-# Paths (normally no need to edit)
+# Paths
 # -----------------------------------------------------------------------------
 INSTALL_DIR="/opt/uptime-kuma-sync"
+ENV_FILE="$INSTALL_DIR/.env"
 PYTHON_SCRIPT="$INSTALL_DIR/uptime-kuma-sync.py"
 VENV_DIR="$INSTALL_DIR/venv"
 DOMAINS_FILE="$INSTALL_DIR/domains-list"
@@ -48,6 +20,17 @@ LOG_FILE="$INSTALL_DIR/uptime-kuma-sync.log"
 SELF_SCRIPT="$INSTALL_DIR/uptime-kuma-sync.sh"
 
 GITHUB_RAW="https://raw.githubusercontent.com/UltimateByte/plesk-tools/refs/heads/main/uptime_kuma_sync"
+
+# -----------------------------------------------------------------------------
+# Load config
+# -----------------------------------------------------------------------------
+load_config() {
+    if [[ ! -f "$ENV_FILE" ]]; then
+        return 1
+    fi
+    # shellcheck source=/dev/null
+    source "$ENV_FILE"
+}
 
 # -----------------------------------------------------------------------------
 # Logging
@@ -79,8 +62,13 @@ check_root() {
 }
 
 check_config() {
+    if ! load_config; then
+        log "ERROR: Config file not found: $ENV_FILE"
+        log "Run: $0 --install"
+        exit 1
+    fi
     if [[ "$UPTIME_KUMA_URL" == "https://your-uptime-kuma-instance.com" ]] || [[ -z "$USERNAME" ]] || [[ -z "$PASSWORD" ]]; then
-        log "ERROR: Edit the configuration section at the top of $SELF_SCRIPT before running."
+        log "ERROR: Edit $ENV_FILE before running."
         exit 1
     fi
 }
@@ -106,6 +94,19 @@ cmd_install() {
     fi
 
     mkdir -p "$INSTALL_DIR"
+
+    # Create .env from example if not present
+    if [[ ! -f "$ENV_FILE" ]]; then
+        log "Downloading .env.example..."
+        if curl -fsSL "$GITHUB_RAW/.env.example" -o "$ENV_FILE"; then
+            chmod 600 "$ENV_FILE"
+            log "Config file created: $ENV_FILE"
+            log ">>> Edit $ENV_FILE with your settings, then re-run."
+        else
+            log "ERROR: Failed to download .env.example"
+            exit 1
+        fi
+    fi
 
     # Create venv
     if [[ ! -d "$VENV_DIR" ]]; then
@@ -145,16 +146,10 @@ cmd_update() {
 
     # Update self
     log "Downloading latest bash script..."
-    local tmp
-    tmp=$(mktemp)
-    if curl -fsSL "$GITHUB_RAW/uptime-kuma-sync.sh" -o "$tmp"; then
-        # Preserve config from current script
-        inject_config "$tmp"
-        mv "$tmp" "$SELF_SCRIPT"
+    if curl -fsSL "$GITHUB_RAW/uptime-kuma-sync.sh" -o "$SELF_SCRIPT"; then
         chmod +x "$SELF_SCRIPT"
-        log "Bash script updated (config preserved)"
+        log "Bash script updated"
     else
-        rm -f "$tmp"
         log "WARNING: Failed to download bash script update"
     fi
 
@@ -173,23 +168,6 @@ download_python_script() {
         log "ERROR: Failed to download Python script"
         exit 1
     fi
-}
-
-# Extract current config values and inject them into a new script version
-inject_config() {
-    local target="$1"
-    local vars=(
-        UPTIME_KUMA_URL USERNAME PASSWORD PARENT_GROUP_ID
-        DEFAULT_NOTIFICATION_IDS MONITOR_INTERVAL MONITOR_RETRY_INTERVAL
-        MONITOR_TIMEOUT MONITOR_MAX_RETRIES MONITOR_MAX_REDIRECTS
-        EXCLUDE_PATTERN CRON_SCHEDULE LOG_RETENTION_DAYS
-    )
-    for var in "${vars[@]}"; do
-        local val="${!var}"
-        # Escape sed special chars in value
-        val=$(printf '%s\n' "$val" | sed 's/[&/\]/\\&/g')
-        sed -i "s|^${var}=.*|${var}=\"${val}\"|" "$target"
-    done
 }
 
 # -----------------------------------------------------------------------------
@@ -214,7 +192,7 @@ list_plesk_domains() {
         [[ -z "$domain" ]] && continue
 
         # Skip excluded patterns
-        if [[ -n "$EXCLUDE_PATTERN" ]] && echo "$domain" | grep -qE "$EXCLUDE_PATTERN"; then
+        if [[ -n "${EXCLUDE_PATTERN:-}" ]] && echo "$domain" | grep -qE "$EXCLUDE_PATTERN"; then
             excluded=$((excluded + 1))
             continue
         fi
@@ -240,7 +218,6 @@ run_python() {
     local action="$1"
     shift
 
-    # Generate Python config dynamically
     local config_json
     config_json=$(cat <<PYEOF
 {
@@ -307,7 +284,8 @@ cmd_cleanup_confirm() {
 }
 
 cmd_cron() {
-    local cron_line="$CRON_SCHEDULE $SELF_SCRIPT --sync"
+    load_config
+    local cron_line="${CRON_SCHEDULE:-0 10 * * *} $SELF_SCRIPT --sync"
     local cron_marker="# uptime-kuma-sync"
 
     # Remove existing
@@ -335,17 +313,17 @@ Sync Plesk domains to Uptime Kuma monitors.
 
 Commands:
     --install           Install/setup Python venv and dependencies
-    --update            Re-download scripts from GitHub (preserves config)
+    --update            Re-download scripts from GitHub (preserves .env)
     --sync              List Plesk domains and sync to Uptime Kuma
     --sync --dry-run    Preview what sync would do without making changes
     --list              List current monitors in the Uptime Kuma group
     --cleanup           Preview monitors that would be removed
     --cleanup-confirm   Remove obsolete monitors
-    --cron              Install cron job ($CRON_SCHEDULE)
+    --cron              Install cron job
     --uncron            Remove cron job
     -h, --help          Show this help
 
-Exclusion pattern: $EXCLUDE_PATTERN
+Config: $ENV_FILE
 EOF
     exit 0
 }
@@ -355,7 +333,7 @@ EOF
 # -----------------------------------------------------------------------------
 check_root
 
-# Ensure install dir and log exist
+# Ensure install dir exists
 mkdir -p "$INSTALL_DIR"
 
 case "${1:---help}" in
