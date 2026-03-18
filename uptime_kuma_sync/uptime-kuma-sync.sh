@@ -3,7 +3,7 @@
 # uptime-kuma-sync.sh - Sync Plesk domains to Uptime Kuma monitors
 # Single entry point: install, update, sync, cleanup, list, cron
 # Author: LRob - https://www.lrob.fr/
-# License: MIT
+# License: GNU General Public License v3.0
 # =============================================================================
 
 set -euo pipefail
