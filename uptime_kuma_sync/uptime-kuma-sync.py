@@ -1,6 +1,7 @@
-#!/opt/uptime-kuma-sync/venv/bin/python
+#!/usr/bin/env python3
 # =============================================================================
 # uptime-kuma-sync.py - Sync Plesk domains to Uptime Kuma monitors via Socket.io
+# Called by uptime-kuma-sync.sh - do not run directly
 # Author: LRob - https://www.lrob.fr/
 # License: MIT
 # =============================================================================
@@ -14,50 +15,28 @@ from pathlib import Path
 import socketio
 
 # -----------------------------------------------------------------------------
-# Configuration
-# -----------------------------------------------------------------------------
-UPTIME_KUMA_URL = "https://your-uptime-kuma-instance.com"
-USERNAME = ""
-PASSWORD = ""
-JWT_FILE = "/opt/uptime-kuma-sync/jwt_token"
-
-DOMAINS_FILE = "/root/uptime-kuma-domains-list"
-PARENT_GROUP_ID = 1
-
-# Monitor settings
-MONITOR_INTERVAL = 60
-MONITOR_RETRY_INTERVAL = 60
-MONITOR_TIMEOUT = 30
-MONITOR_MAX_RETRIES = 1
-MONITOR_MAX_REDIRECTS = 10
-
-# Default notification IDs to attach (empty = none, or list like [1, 2])
-DEFAULT_NOTIFICATION_IDS = [1]
-
-# -----------------------------------------------------------------------------
 # Globals
 # -----------------------------------------------------------------------------
 sio = socketio.Client()
 monitor_list = {}
 authenticated = False
 jwt_token = None
+config = {}
 
 
 # -----------------------------------------------------------------------------
 # JWT Management
 # -----------------------------------------------------------------------------
 def load_jwt():
-    """Load JWT from file if exists."""
-    path = Path(JWT_FILE)
+    path = Path(config["jwt_file"])
     if path.exists():
         return path.read_text().strip()
     return None
 
 
 def save_jwt(token):
-    """Save JWT to file."""
-    Path(JWT_FILE).write_text(token)
-    print(f"  JWT saved to {JWT_FILE}")
+    Path(config["jwt_file"]).write_text(token)
+    print(f"  JWT saved to {config['jwt_file']}")
 
 
 # -----------------------------------------------------------------------------
@@ -83,10 +62,8 @@ def on_monitor_list(data):
 # Authentication
 # -----------------------------------------------------------------------------
 def authenticate():
-    """Authenticate via JWT or username/password."""
     global authenticated, jwt_token
 
-    # Try JWT first
     jwt_token = load_jwt()
     if jwt_token:
         print("  Attempting JWT authentication...")
@@ -98,16 +75,18 @@ def authenticate():
         else:
             print("  JWT expired or invalid, falling back to password")
 
-    # Fallback to username/password
-    if not USERNAME or not PASSWORD:
+    username = config.get("username", "")
+    password = config.get("password", "")
+
+    if not username or not password:
         print("ERROR: No valid JWT and no username/password configured")
         sys.exit(1)
 
     print("  Authenticating with username/password...")
     response = call_with_callback("login", {
-        "username": USERNAME,
-        "password": PASSWORD,
-        "token": ""  # 2FA token if needed
+        "username": username,
+        "password": password,
+        "token": ""
     })
 
     if response and response.get("ok"):
@@ -124,7 +103,6 @@ def authenticate():
 
 
 def call_with_callback(event, data, timeout=30):
-    """Emit an event and wait for callback response."""
     try:
         response = sio.call(event, data, timeout=timeout)
         return response
@@ -140,11 +118,10 @@ def call_with_callback(event, data, timeout=30):
 # Domain File Parsing
 # -----------------------------------------------------------------------------
 def load_domains():
-    """Load domains from file. Returns dict {name: url}."""
     domains = {}
-    path = Path(DOMAINS_FILE)
+    path = Path(config["domains_file"])
     if not path.exists():
-        print(f"ERROR: Domains file not found: {DOMAINS_FILE}")
+        print(f"ERROR: Domains file not found: {config['domains_file']}")
         sys.exit(1)
 
     for line in path.read_text().strip().split("\n"):
@@ -163,10 +140,10 @@ def load_domains():
 # Monitor Operations
 # -----------------------------------------------------------------------------
 def get_existing_monitors():
-    """Get monitors under the parent group."""
     existing = {}
+    parent_id = config["parent_group_id"]
     for monitor_id, monitor in monitor_list.items():
-        if monitor.get("parent") == PARENT_GROUP_ID and monitor.get("type") == "http":
+        if monitor.get("parent") == parent_id and monitor.get("type") == "http":
             existing[monitor["name"]] = {
                 "id": int(monitor_id),
                 "url": monitor.get("url", "")
@@ -175,23 +152,21 @@ def get_existing_monitors():
 
 
 def create_monitor(name, url):
-    """Create a new HTTP monitor."""
-    # Build notification ID list
-    notif_list = {str(nid): True for nid in DEFAULT_NOTIFICATION_IDS}
+    notif_list = {str(nid): True for nid in config["notification_ids"]}
 
     monitor_data = {
         "name": name,
         "type": "http",
         "url": url,
         "method": "GET",
-        "interval": MONITOR_INTERVAL,
-        "retryInterval": MONITOR_RETRY_INTERVAL,
-        "timeout": MONITOR_TIMEOUT,
-        "maxretries": MONITOR_MAX_RETRIES,
-        "maxredirects": MONITOR_MAX_REDIRECTS,
+        "interval": config["monitor_interval"],
+        "retryInterval": config["monitor_retry_interval"],
+        "timeout": config["monitor_timeout"],
+        "maxretries": config["monitor_max_retries"],
+        "maxredirects": config["monitor_max_redirects"],
         "resendInterval": 0,
         "active": True,
-        "parent": PARENT_GROUP_ID,
+        "parent": config["parent_group_id"],
         "notificationIDList": notif_list,
         "accepted_statuscodes": ["200-299"],
         "expiryNotification": True,
@@ -219,7 +194,6 @@ def create_monitor(name, url):
 
 
 def delete_monitor(monitor_id, name):
-    """Delete a monitor."""
     response = call_with_callback("deleteMonitor", monitor_id)
 
     if response and response.get("ok"):
@@ -234,19 +208,30 @@ def delete_monitor(monitor_id, name):
 # -----------------------------------------------------------------------------
 # Commands
 # -----------------------------------------------------------------------------
-def cmd_sync():
-    """Sync monitors: create missing ones."""
-    print("=== Syncing monitors ===")
+def cmd_sync(dry_run=False):
+    label = "Sync preview (dry-run)" if dry_run else "Syncing monitors"
+    print(f"=== {label} ===")
 
     domains = load_domains()
     existing = get_existing_monitors()
 
+    to_create = {name: url for name, url in domains.items() if name not in existing}
+
+    if not to_create:
+        print("  Nothing to create, all domains already monitored")
+        return
+
+    if dry_run:
+        for name, url in sorted(to_create.items()):
+            print(f"  Would create: {name} -> {url}")
+        print(f"\nTotal: {len(to_create)} monitor(s) to create")
+        return
+
     created = 0
-    for name, url in domains.items():
-        if name not in existing:
-            if create_monitor(name, url):
-                created += 1
-            time.sleep(0.2)  # Small delay to avoid overwhelming
+    for name, url in sorted(to_create.items()):
+        if create_monitor(name, url):
+            created += 1
+        time.sleep(0.2)
 
     print()
     print(f"Created: {created} monitor(s)")
@@ -254,99 +239,78 @@ def cmd_sync():
 
 
 def cmd_list():
-    """List monitors in the parent group."""
-    print(f"=== Monitors in group (parent={PARENT_GROUP_ID}) ===")
-
+    print(f"=== Monitors in group (parent={config['parent_group_id']}) ===")
     existing = get_existing_monitors()
 
     for name, data in sorted(existing.items()):
         print(f"  [{data['id']}] {name} - {data['url']}")
 
-    print()
-    print(f"Total: {len(existing)} monitor(s)")
+    print(f"\nTotal: {len(existing)} monitor(s)")
 
 
-def cmd_cleanup_preview():
-    """Preview monitors to be deleted."""
-    print("=== Monitors to be removed (preview) ===")
-
-    domains = load_domains()
-    existing = get_existing_monitors()
-
-    to_delete = []
-    for name, data in existing.items():
-        if name not in domains:
-            to_delete.append((data["id"], name, data["url"]))
-            print(f"  [{data['id']}] {name} - {data['url']}")
-
-    print()
-    print(f"Total to delete: {len(to_delete)} monitor(s)")
-    print("Run with --cleanup-confirm to delete these monitors and their data.")
-
-
-def cmd_cleanup_confirm():
-    """Delete obsolete monitors."""
-    print("=== Removing obsolete monitors ===")
+def cmd_cleanup(confirm=False):
+    label = "Removing obsolete monitors" if confirm else "Monitors to be removed (preview)"
+    print(f"=== {label} ===")
 
     domains = load_domains()
     existing = get_existing_monitors()
+
+    to_delete = [(data["id"], name, data["url"]) for name, data in existing.items() if name not in domains]
+
+    if not to_delete:
+        print("  Nothing to remove")
+        return
+
+    if not confirm:
+        for mid, name, url in to_delete:
+            print(f"  [{mid}] {name} - {url}")
+        print(f"\nTotal to delete: {len(to_delete)} monitor(s)")
+        print("Run with --cleanup-confirm to delete these monitors and their data.")
+        return
 
     deleted = 0
-    for name, data in existing.items():
-        if name not in domains:
-            if delete_monitor(data["id"], name):
-                deleted += 1
-            time.sleep(0.2)
+    for mid, name, url in to_delete:
+        if delete_monitor(mid, name):
+            deleted += 1
+        time.sleep(0.2)
 
-    print()
-    print(f"Deleted: {deleted} monitor(s)")
+    print(f"\nDeleted: {deleted} monitor(s)")
 
 
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(
-        description="Sync Plesk domains to Uptime Kuma monitors"
-    )
-    parser.add_argument("-s", "--sync", action="store_true",
-                        help="Sync monitors (create missing ones)")
-    parser.add_argument("-l", "--list", action="store_true",
-                        help="List current monitors in group")
-    parser.add_argument("-c", "--cleanup", action="store_true",
-                        help="Preview monitors to be removed")
-    parser.add_argument("-C", "--cleanup-confirm", action="store_true",
-                        help="Remove obsolete monitors (with data)")
+    global config
+
+    parser = argparse.ArgumentParser(description="Uptime Kuma sync (called by wrapper)")
+    parser.add_argument("--action", required=True, choices=["sync", "list", "cleanup", "cleanup-confirm"])
+    parser.add_argument("--config", required=True, help="JSON config string")
+    parser.add_argument("--dry-run", action="store_true", help="Preview only")
 
     args = parser.parse_args()
-
-    if not any([args.sync, args.list, args.cleanup, args.cleanup_confirm]):
-        parser.print_help()
-        sys.exit(0)
+    config = json.loads(args.config)
 
     # Connect
-    print(f"Connecting to {UPTIME_KUMA_URL}...")
+    print(f"Connecting to {config['url']}...")
     try:
-        sio.connect(UPTIME_KUMA_URL, transports=["websocket"])
+        sio.connect(config["url"], transports=["websocket"])
     except Exception as e:
         print(f"ERROR: Connection failed: {e}")
         sys.exit(1)
 
-    # Authenticate
     authenticate()
-
-    # Wait for monitor list
     time.sleep(1)
 
     try:
-        if args.sync:
-            cmd_sync()
-        elif args.list:
+        if args.action == "sync":
+            cmd_sync(dry_run=args.dry_run)
+        elif args.action == "list":
             cmd_list()
-        elif args.cleanup:
-            cmd_cleanup_preview()
-        elif args.cleanup_confirm:
-            cmd_cleanup_confirm()
+        elif args.action == "cleanup":
+            cmd_cleanup(confirm=False)
+        elif args.action == "cleanup-confirm":
+            cmd_cleanup(confirm=True)
     finally:
         sio.disconnect()
 
