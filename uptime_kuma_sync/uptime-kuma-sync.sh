@@ -225,7 +225,7 @@ list_plesk_domains() {
 
     local raw
     # Main domains with seo redirect preference
-    raw=$(plesk db -Ne "SELECT d.name, COALESCE(p.val, 'none') FROM domains d LEFT JOIN dom_param p ON d.id = p.dom_id AND p.param = 'seoRedirect' WHERE d.status = 0 AND d.htype = 'vrt_hst'" | cat)
+    raw=$(plesk db -Ne "SELECT d.name, COALESCE(p.val, 'none') FROM domains d LEFT JOIN dom_param p ON d.id = p.dom_id AND p.param = 'seoRedirect' WHERE d.status = 0 AND d.htype IN ('vrt_hst', 'std_fwd', 'frm_fwd')" | cat)
 
     # Domain aliases with web hosting enabled
     local aliases
