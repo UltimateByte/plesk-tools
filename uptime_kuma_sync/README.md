@@ -129,7 +129,6 @@ Logs are written to `/opt/uptime-kuma-sync/uptime-kuma-sync.log` with automatic 
 ├── uptime-kuma-sync.py   # Python script (Socket.io communication)
 ├── venv/                 # Python virtual environment
 ├── domains-list          # Plesk domain list (auto-generated)
-├── jwt_token             # Uptime Kuma JWT token (auto-generated)
 └── uptime-kuma-sync.log  # Logs
 ```
 
