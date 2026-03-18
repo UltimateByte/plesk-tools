@@ -95,17 +95,54 @@ cmd_install() {
 
     mkdir -p "$INSTALL_DIR"
 
-    # Create .env from example if not present
+    # Create .env interactively if not present
     if [[ ! -f "$ENV_FILE" ]]; then
-        log "Downloading .env.example..."
-        if curl -fsSL "$GITHUB_RAW/.env.example" -o "$ENV_FILE"; then
-            chmod 600 "$ENV_FILE"
-            log "Config file created: $ENV_FILE"
-            log ">>> Edit $ENV_FILE with your settings, then re-run."
-        else
-            log "ERROR: Failed to download .env.example"
-            exit 1
-        fi
+        log "No config file found, starting interactive setup..."
+        echo ""
+        read -rp "Uptime Kuma URL (e.g. https://kuma.example.com): " input_url
+        read -rp "Uptime Kuma username: " input_user
+        read -rsp "Uptime Kuma password: " input_pass
+        echo ""
+        read -rp "Parent group ID [1]: " input_group
+        input_group="${input_group:-1}"
+        read -rp "Notification IDs (space-separated) [1]: " input_notif
+        input_notif="${input_notif:-1}"
+
+        cat > "$ENV_FILE" <<ENVEOF
+# =============================================================================
+# uptime-kuma-sync configuration
+# =============================================================================
+
+# Uptime Kuma connection
+UPTIME_KUMA_URL="${input_url}"
+USERNAME="${input_user}"
+PASSWORD="${input_pass}"
+
+# Uptime Kuma monitor group parent ID
+PARENT_GROUP_ID=${input_group}
+
+# Default notification IDs to attach (space-separated, e.g., "1 2 3")
+DEFAULT_NOTIFICATION_IDS="${input_notif}"
+
+# Monitor defaults
+MONITOR_INTERVAL=60
+MONITOR_RETRY_INTERVAL=60
+MONITOR_TIMEOUT=30
+MONITOR_MAX_RETRIES=1
+MONITOR_MAX_REDIRECTS=10
+
+# Domain exclusion patterns (grep -E pattern, matched against domain name)
+EXCLUDE_PATTERN="\.plesk\.page$"
+
+# Cron schedule (used by --cron)
+CRON_SCHEDULE="0 10 * * *"
+
+# Log retention in days
+LOG_RETENTION_DAYS=30
+ENVEOF
+
+        chmod 600 "$ENV_FILE"
+        log "Config saved to $ENV_FILE"
     fi
 
     # Create venv
