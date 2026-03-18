@@ -195,6 +195,7 @@ def create_monitor(name, url):
         "notificationIDList": notif_list,
         "accepted_statuscodes": ["200-299"],
         "expiryNotification": True,
+        "domainExpiryNotification": False,
         "ignoreTls": False,
         "upsideDown": False,
         "packetSize": 56,
