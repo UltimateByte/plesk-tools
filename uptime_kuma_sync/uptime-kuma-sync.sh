@@ -309,30 +309,29 @@ cmd_list() {
 }
 
 cmd_cleanup() {
+    local dry_run="${1:-false}"
     check_config
     ensure_installed
 
     list_plesk_domains
-    run_python cleanup
-}
 
-cmd_cleanup_confirm() {
-    check_config
-    ensure_installed
-
-    list_plesk_domains
-    run_python cleanup-confirm
+    if [[ "$dry_run" == "true" ]]; then
+        run_python cleanup --dry-run
+    else
+        run_python cleanup
+    fi
 }
 
 cmd_cron() {
     load_config
-    local cron_line="${CRON_SCHEDULE:-0 10 * * *} $SELF_SCRIPT --sync"
+    local schedule="${CRON_SCHEDULE:-0 10 * * *}"
     local cron_marker="# uptime-kuma-sync"
 
     # Remove existing
     crontab -l 2>/dev/null | grep -v "$cron_marker" | crontab - 2>/dev/null || true
 
-    # Add new
+    # Add sync + cleanup
+    local cron_line="$schedule $SELF_SCRIPT --sync && $SELF_SCRIPT --cleanup"
     (crontab -l 2>/dev/null; echo "$cron_line $cron_marker") | crontab -
     log "Cron installed: $cron_line"
 }
@@ -355,12 +354,12 @@ Sync Plesk domains to Uptime Kuma monitors.
 Commands:
     --install           Install/setup Python venv and dependencies
     --update            Re-download scripts from GitHub (preserves .env)
-    --sync              List Plesk domains and sync to Uptime Kuma
+    --sync              List Plesk domains and create missing monitors
     --sync --dry-run    Preview what sync would do without making changes
     --list              List current monitors in the Uptime Kuma group
-    --cleanup           Preview monitors that would be removed
-    --cleanup-confirm   Remove obsolete monitors
-    --cron              Install cron job
+    --cleanup           Remove obsolete monitors
+    --cleanup --dry-run Preview monitors that would be removed
+    --cron              Install cron job (sync + cleanup)
     --uncron            Remove cron job
     -h, --help          Show this help
 
@@ -388,8 +387,13 @@ case "${1:---help}" in
         fi
         ;;
     --list)             cmd_list ;;
-    --cleanup)          cmd_cleanup ;;
-    --cleanup-confirm)  cmd_cleanup_confirm ;;
+    --cleanup)
+        if [[ "${2:-}" == "--dry-run" ]]; then
+            cmd_cleanup true
+        else
+            cmd_cleanup false
+        fi
+        ;;
     --cron)             cmd_cron ;;
     --uncron)           cmd_uncron ;;
     -h|--help)          usage ;;
