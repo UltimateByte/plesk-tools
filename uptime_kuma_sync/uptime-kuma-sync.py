@@ -62,7 +62,7 @@ def authenticate():
             "username": username,
             "password": password,
             "token": ""
-        }, timeout=10)
+        }, timeout=30)
 
         if response and response.get("ok"):
             print("  Login successful")
@@ -274,6 +274,8 @@ def main():
     except Exception as e:
         print(f"ERROR: Connection failed: {e}")
         sys.exit(1)
+
+    time.sleep(2)  # Wait for server to be ready
 
     authenticate()
     print("  Loading monitors...")
