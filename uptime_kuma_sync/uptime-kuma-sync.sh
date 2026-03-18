@@ -88,13 +88,6 @@ ensure_installed() {
 cmd_install() {
     log "=== Installing uptime-kuma-sync ==="
 
-    # Install python3-venv if needed
-    if ! python3 -m venv --help &>/dev/null; then
-        log "Installing python3-venv..."
-        apt update
-        apt install -y python3-venv
-    fi
-
     mkdir -p "$INSTALL_DIR"
 
     # Create .env interactively if not present
@@ -105,6 +98,30 @@ cmd_install() {
         read -rp "Uptime Kuma username: " input_user
         read -rsp "Uptime Kuma password: " input_pass
         echo ""
+
+        # Install deps first so we can query Kuma
+        setup_venv
+
+        # Download Python script
+        download_python_script
+
+        # Query Kuma for available groups and notifications
+        echo ""
+        log "Connecting to Uptime Kuma to list available groups and notifications..."
+        local info_json
+        info_json=$(cat <<PYEOF
+{
+    "url": "${input_url}",
+    "username": "${input_user}",
+    "password": "${input_pass}",
+    "login_timeout": 15
+}
+PYEOF
+)
+        echo ""
+        "$VENV_DIR/bin/python" -u "$PYTHON_SCRIPT" --action info --config "$info_json" 2>&1 || true
+        echo ""
+
         read -rp "Parent group ID [1]: " input_group
         input_group="${input_group:-1}"
         read -rp "Notification IDs (space-separated) [1]: " input_notif
@@ -150,19 +167,13 @@ ENVEOF
         log "Config saved to $ENV_FILE"
     fi
 
-    # Create venv
-    if [[ ! -d "$VENV_DIR" ]]; then
-        log "Creating Python virtual environment..."
-        python3 -m venv "$VENV_DIR"
+    # Ensure venv and deps (idempotent)
+    setup_venv
+
+    # Ensure Python script
+    if [[ ! -f "$PYTHON_SCRIPT" ]]; then
+        download_python_script
     fi
-
-    # Install/upgrade dependencies
-    log "Installing Python dependencies..."
-    "$VENV_DIR/bin/pip" install --upgrade pip -q
-    "$VENV_DIR/bin/pip" install --upgrade "python-socketio[client]" websocket-client -q
-
-    # Download Python script
-    download_python_script
 
     # Copy self to install dir if not already there
     local self_path
@@ -214,6 +225,24 @@ download_python_script() {
         log "ERROR: Failed to download Python script"
         exit 1
     fi
+}
+
+setup_venv() {
+    # Install python3-venv if needed
+    if ! python3 -m venv --help &>/dev/null; then
+        log "Installing python3-venv..."
+        apt update
+        apt install -y python3-venv
+    fi
+
+    if [[ ! -d "$VENV_DIR" ]]; then
+        log "Creating Python virtual environment..."
+        python3 -m venv "$VENV_DIR"
+    fi
+
+    log "Installing Python dependencies..."
+    "$VENV_DIR/bin/pip" install --upgrade pip -q
+    "$VENV_DIR/bin/pip" install --upgrade "python-socketio[client]" websocket-client -q
 }
 
 # -----------------------------------------------------------------------------
@@ -358,6 +387,12 @@ cmd_uncron() {
     log "Cron removed"
 }
 
+cmd_info() {
+    check_config
+    ensure_installed
+    run_python info
+}
+
 # -----------------------------------------------------------------------------
 # Usage
 # -----------------------------------------------------------------------------
@@ -375,6 +410,7 @@ Commands:
     --list              List current monitors in the Uptime Kuma group
     --cleanup           Remove obsolete monitors
     --cleanup --dry-run Preview monitors that would be removed
+    --info              Show available groups and notifications
     --cron              Install cron job (sync + cleanup)
     --uncron            Remove cron job
     -h, --help          Show this help
@@ -403,6 +439,7 @@ case "${1:---help}" in
         fi
         ;;
     --list)             cmd_list ;;
+    --info)             cmd_info ;;
     --cleanup)
         if [[ "${2:-}" == "--dry-run" ]]; then
             cmd_cleanup true
