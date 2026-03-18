@@ -3,7 +3,7 @@
 # uptime-kuma-sync.py - Sync Plesk domains to Uptime Kuma monitors via Socket.io
 # Called by uptime-kuma-sync.sh - do not run directly
 # Author: LRob - https://www.lrob.fr/
-# License: MIT
+# License: GNU General Public License v3.0
 # =============================================================================
 
 import sys
