@@ -248,8 +248,8 @@ def cmd_list():
     print(f"\nTotal: {len(existing)} monitor(s)")
 
 
-def cmd_cleanup(confirm=False):
-    label = "Removing obsolete monitors" if confirm else "Monitors to be removed (preview)"
+def cmd_cleanup(dry_run=False):
+    label = "Cleanup preview (dry-run)" if dry_run else "Removing obsolete monitors"
     print(f"=== {label} ===")
 
     domains = load_domains()
@@ -261,11 +261,10 @@ def cmd_cleanup(confirm=False):
         print("  Nothing to remove")
         return
 
-    if not confirm:
+    if dry_run:
         for mid, name, url in to_delete:
-            print(f"  [{mid}] {name} - {url}")
-        print(f"\nTotal to delete: {len(to_delete)} monitor(s)")
-        print("Run with --cleanup-confirm to delete these monitors and their data.")
+            print(f"  Would delete: [{mid}] {name} - {url}")
+        print(f"\nTotal: {len(to_delete)} monitor(s) to delete")
         return
 
     deleted = 0
@@ -284,7 +283,7 @@ def main():
     global config
 
     parser = argparse.ArgumentParser(description="Uptime Kuma sync (called by wrapper)")
-    parser.add_argument("--action", required=True, choices=["sync", "list", "cleanup", "cleanup-confirm"])
+    parser.add_argument("--action", required=True, choices=["sync", "list", "cleanup"])
     parser.add_argument("--config", required=True, help="JSON config string")
     parser.add_argument("--dry-run", action="store_true", help="Preview only")
 
@@ -311,9 +310,7 @@ def main():
         elif args.action == "list":
             cmd_list()
         elif args.action == "cleanup":
-            cmd_cleanup(confirm=False)
-        elif args.action == "cleanup-confirm":
-            cmd_cleanup(confirm=True)
+            cmd_cleanup(dry_run=args.dry_run)
     finally:
         sio.disconnect()
 
