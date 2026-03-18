@@ -61,9 +61,9 @@ uptime-kuma-sync [OPTION]
 | `--sync` | List Plesk domains and create missing monitors |
 | `--sync --dry-run` | Preview what would be created without making changes |
 | `--list` | List existing monitors in the Uptime Kuma group |
-| `--cleanup` | Preview obsolete monitors to be removed |
-| `--cleanup-confirm` | Remove obsolete monitors and their data |
-| `--cron` | Install a cron job (daily at 10am by default) |
+| `--cleanup` | Remove obsolete monitors |
+| `--cleanup --dry-run` | Preview monitors that would be removed |
+| `--cron` | Install a cron job (sync + cleanup, daily at 10am by default) |
 | `--uncron` | Remove the cron job |
 
 ## Examples
@@ -78,8 +78,8 @@ uptime-kuma-sync --sync            # create the monitors
 Clean up removed domains:
 
 ```bash
-uptime-kuma-sync --cleanup          # preview
-uptime-kuma-sync --cleanup-confirm  # actually delete
+uptime-kuma-sync --cleanup --dry-run  # preview
+uptime-kuma-sync --cleanup            # actually delete
 ```
 
 Set up daily automation at 10am:
