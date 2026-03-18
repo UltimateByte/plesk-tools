@@ -45,8 +45,15 @@ def on_monitor_list(data):
 # -----------------------------------------------------------------------------
 # Authentication
 # -----------------------------------------------------------------------------
+_login_response = None
+_login_event = None
+
+
 def authenticate():
-    global authenticated
+    global authenticated, _login_response, _login_event
+
+    import threading
+    _login_event = threading.Event()
 
     username = config.get("username", "")
     password = config.get("password", "")
@@ -58,22 +65,39 @@ def authenticate():
     max_retries = 3
     for attempt in range(1, max_retries + 1):
         print(f"  Authenticating (attempt {attempt}/{max_retries})...")
-        response = call_with_callback("login", {
+        _login_response = None
+        _login_event.clear()
+
+        def on_login_response(data):
+            global _login_response
+            _login_response = data
+            _login_event.set()
+
+        sio.emit("login", {
             "username": username,
             "password": password,
             "token": ""
-        }, timeout=30)
+        }, callback=on_login_response)
 
-        if response and response.get("ok"):
+        _login_event.wait(timeout=config.get("login_timeout", 15))
+
+        if _login_response and _login_response.get("ok"):
             print("  Login successful")
             authenticated = True
             return True
 
         if attempt < max_retries:
-            print("  Retrying...")
-            time.sleep(2)
+            print("  Login failed, reconnecting...")
+            try:
+                sio.disconnect()
+                time.sleep(1)
+                sio.connect(config["url"], transports=["websocket"])
+                time.sleep(2)
+            except Exception as e:
+                print(f"  WARNING: Reconnect error: {e}")
+                time.sleep(2)
 
-    msg = response.get("msg", "Unknown error") if response else "No response (timeout)"
+    msg = _login_response.get("msg", "Unknown error") if _login_response else "No response (timeout)"
     print(f"ERROR: Authentication failed after {max_retries} attempts: {msg}")
     sys.exit(1)
 
