@@ -204,6 +204,16 @@ non-renewal) from a deliberate one, so a single policy applies via
 | `pause` | Keep the monitor but pause it (no alert); resumed automatically on reactivation |
 | `delete` | Don't monitor suspended domains; recreated when reactivated |
 
+## Possible improvements
+
+- **Use Uptime Kuma tags instead of (or alongside) groups.** Tags are
+  multi-valued and don't require moving a monitor between groups, so state could
+  be expressed as labels — `reseller:<name>`, `off-server`, `suspended` — added
+  or removed in place rather than relocating monitors. This would sidestep group
+  churn entirely and allow a monitor to carry several facets at once.
+- A `by-reseller-client` grouping mode (a sub-level per client under each
+  reseller).
+
 ## Updating
 
 ```bash
