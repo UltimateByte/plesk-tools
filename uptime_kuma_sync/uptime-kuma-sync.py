@@ -161,15 +161,26 @@ def load_domains():
 SUSPENDED_STATUSES = (16, 32)
 
 
-def name_suffix():
-    return config.get("offserver_name_suffix", "") or ""
+def managed_suffixes():
+    """Suffixes the tool appends to mark monitors IT paused (off-server/suspended)."""
+    return [s for s in (config.get("offserver_name_suffix", "") or "",
+                        config.get("suspended_name_suffix", "") or "") if s]
 
 
 def strip_suffix(name):
-    suffix = name_suffix()
-    if suffix and name.endswith(suffix):
-        return name[:-len(suffix)]
+    """Strip any managed suffix to recover the canonical domain name."""
+    for s in managed_suffixes():
+        if name.endswith(s):
+            return name[:-len(s)]
     return name
+
+
+def is_tool_paused_name(name):
+    """True if the monitor name carries a managed suffix (i.e. the tool paused it).
+
+    Used so the reconciler never resumes a monitor a human paused manually.
+    """
+    return any(name.endswith(s) for s in managed_suffixes())
 
 
 # -----------------------------------------------------------------------------
@@ -305,20 +316,53 @@ def reseller_group_id(reseller, create=False, dry_run=False):
     return gid
 
 
-def home_group_id(info, create=False, dry_run=False):
-    """The group a domain's monitor belongs to, per GROUPING_MODE.
+def group_target_spec(info, dns_state):
+    """Which group a monitor should live in, as a spec tuple.
 
-    by-reseller: reseller-owned -> the reseller's group; admin/direct -> main.
-    flat (or unresolved reseller group): the main parent group.
+    Off-server `move` sends it to the off-server group; otherwise by-reseller
+    sends reseller-owned domains to their reseller group, everything else (admin
+    /direct customers, or flat mode) to the main group.
     """
+    if dns_state == "off" and config.get("offserver_action", "report") == "move":
+        return ("offserver",)
+    if config.get("grouping_mode", "by-reseller") == "by-reseller":
+        reseller = info.get("reseller") or ""
+        if reseller:
+            return ("reseller", reseller)
+    return ("main",)
+
+
+def group_lookup(spec):
+    """Resolve a group spec to (gid_or_None, human label) WITHOUT creating it."""
     main_gid = config["parent_group_id"]
-    if config.get("grouping_mode", "by-reseller") != "by-reseller":
-        return main_gid
-    reseller = info.get("reseller") or ""
-    if not reseller:
-        return main_gid
-    gid = reseller_group_id(reseller, create=create, dry_run=dry_run)
-    return gid if gid is not None else main_gid
+    if spec[0] == "reseller":
+        gname = (config.get("reseller_group_prefix") or "") + spec[1]
+        found = find_group_by_name(gname)
+        return (found[0] if found else None), f"reseller group '{gname}'"
+    if spec[0] == "offserver":
+        return resolve_offserver_group(create=False), "off-server group"
+    return main_gid, "main group"
+
+
+def ensure_group(spec):
+    """Resolve a group spec, creating the group if needed; return its id."""
+    gid, _ = group_lookup(spec)
+    if gid is not None:
+        return gid
+    if spec[0] == "reseller":
+        return reseller_group_id(spec[1], create=True)
+    if spec[0] == "offserver":
+        return resolve_offserver_group(create=True)
+    return config["parent_group_id"]
+
+
+def home_group_id(info, create=False, dry_run=False):
+    """Resolve the home group id for a domain (used when creating monitors)."""
+    spec = group_target_spec(info, "unknown")
+    if create and not dry_run:
+        return ensure_group(spec)
+    gid, _ = group_lookup(spec)
+    return gid if gid is not None else config["parent_group_id"]
 
 
 def all_http_monitors():
@@ -560,7 +604,7 @@ def cmd_cleanup(dry_run=False):
     changed = 0
     for name in sorted(present):
         if reconcile_monitor(name, domains[name], existing[name],
-                             states.get(name, "unknown"), off_gid, dry_run):
+                             states.get(name, "unknown"), dry_run):
             changed += 1
             if not dry_run:
                 time.sleep(0.2)
@@ -569,22 +613,24 @@ def cmd_cleanup(dry_run=False):
         print(f"\nReconciled: {changed} monitor(s)")
 
 
-def reconcile_monitor(name, info, mon, dns_state, off_gid, dry_run):
+def reconcile_monitor(name, info, mon, dns_state, dry_run):
     """Bring one monitor to its desired state (group, paused, name suffix).
 
     Desired state is recomputed from scratch each run, so the off-server (move/
-    pause) and suspended (pause) actions are inherently reversible: once a domain
-    is active and points home again, the monitor is moved back, resumed and
-    un-suffixed. Returns True if any change was made (or would be, in dry-run).
+    pause) and suspended (pause) actions are reversible. Crucially, the tool only
+    ever resumes / un-suffixes monitors IT paused (those carrying a managed
+    suffix) - a monitor a human paused manually is never touched.
+    Returns True if any change was made (or would be, in dry-run).
     """
     status = info["status"]
     suspended_action = config.get("suspended_action", "keep")
     offserver_action = config.get("offserver_action", "report")
+    off_suffix = config.get("offserver_name_suffix", "") or ""
+    susp_suffix = config.get("suspended_name_suffix", "") or ""
 
     delete = False
     paused = False
-    suffixed = False
-    group = home_group_id(info, create=not dry_run, dry_run=dry_run)
+    desired_suffix = ""
     reason = []
 
     # Suspended-in-Plesk policy
@@ -594,43 +640,41 @@ def reconcile_monitor(name, info, mon, dns_state, off_gid, dry_run):
             reason.append("suspended")
         elif suspended_action == "pause":
             paused = True
+            desired_suffix = susp_suffix
             reason.append("suspended")
 
-    # Off-server policy (DNS no longer points here)
-    if dns_state == "off" and offserver_action != "off":
+    # Off-server policy (DNS no longer points here). report = log only, no change.
+    if dns_state == "off" and offserver_action not in ("off", "report"):
         if offserver_action == "delete":
             delete = True
             reason.append("off-server")
-        elif offserver_action == "pause":
+        elif offserver_action in ("pause", "move"):
             paused = True
-            suffixed = True
+            desired_suffix = off_suffix
             reason.append("off-server")
-        elif offserver_action == "move":
-            tgid = resolve_offserver_group(create=not dry_run, dry_run=dry_run)
-            if tgid is not None:
-                group = tgid
-            paused = True
-            suffixed = True
-            reason.append("off-server")
-        elif offserver_action == "report":
-            print(f"  off-server (report only): {name}")
+    elif dns_state == "off" and offserver_action == "report":
+        print(f"  off-server (report only): {name}")
 
-    # Compute the operations needed to reach the desired state
+    # Desired group (off-server move overrides; else by reseller / main)
+    spec = group_target_spec(info, dns_state)
+    target_gid, target_label = group_lookup(spec)
+    # If the target group doesn't exist yet, it will be created on a real move.
+    move_needed = (target_gid is None) or (mon["parent"] != target_gid)
+
+    # Compute operations
     ops = []
-    edits = {}
     if delete:
         ops.append("delete")
     else:
-        if group is not None and mon["parent"] != group:
-            edits["parent"] = group
-            ops.append("move group")
-        desired_name = name + (name_suffix() if suffixed else "")
+        if move_needed:
+            ops.append(f"move -> {target_label}")
+        desired_name = name + desired_suffix
         if mon["name_raw"] != desired_name:
-            edits["name"] = desired_name
             ops.append("rename")
         if paused and mon["active"]:
             ops.append("pause")
-        elif not paused and not mon["active"]:
+        elif not paused and not mon["active"] and is_tool_paused_name(mon["name_raw"]):
+            # Only resume what the tool paused (carries a managed suffix).
             ops.append("resume")
 
     if not ops:
@@ -643,6 +687,15 @@ def reconcile_monitor(name, info, mon, dns_state, off_gid, dry_run):
 
     if delete:
         return delete_monitor(mon["id"], name)
+
+    edits = {}
+    if move_needed:
+        gid = ensure_group(spec)
+        if gid is not None and gid != mon["parent"]:
+            edits["parent"] = gid
+    desired_name = name + desired_suffix
+    if mon["name_raw"] != desired_name:
+        edits["name"] = desired_name
 
     ok = True
     if edits:

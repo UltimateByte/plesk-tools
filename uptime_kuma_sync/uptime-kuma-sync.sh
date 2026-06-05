@@ -103,6 +103,9 @@ RESELLER_GROUP_PARENT=""
 #   pause  - keep the monitor but pause it (no alert), resumed on reactivation
 #   delete - do not monitor suspended domains (recreated when reactivated)
 SUSPENDED_ACTION="keep"
+# Cosmetic suffix marking a monitor the tool paused for suspension (SUSPENDED_ACTION=pause).
+# Also serves as the ownership marker so the tool never resumes a manual pause.
+SUSPENDED_NAME_SUFFIX=" [suspended]"
 ENVEOF
 }
 
@@ -120,6 +123,10 @@ ensure_env_keys() {
     fi
     if ! grep -q '^GROUPING_MODE=' "$ENV_FILE"; then
         print_grouping_config >> "$ENV_FILE"
+        added=1
+    fi
+    if ! grep -q '^SUSPENDED_NAME_SUFFIX=' "$ENV_FILE"; then
+        printf '\n# Cosmetic suffix marking a monitor the tool paused for suspension (ownership marker).\nSUSPENDED_NAME_SUFFIX=" [suspended]"\n' >> "$ENV_FILE"
         added=1
     fi
     [[ $added -eq 1 ]] && log "Added new settings to $ENV_FILE (defaults applied, review them)"
@@ -453,6 +460,7 @@ run_python() {
     "reseller_group_prefix": "${RESELLER_GROUP_PREFIX:-}",
     "reseller_group_parent": ${RESELLER_GROUP_PARENT:-null},
     "suspended_action": "${SUSPENDED_ACTION:-keep}",
+    "suspended_name_suffix": "${SUSPENDED_NAME_SUFFIX:- [suspended]}",
     "dns_resolver": "${DNS_RESOLVER:-1.1.1.1}",
     "local_ips": $local_ips_json
 }

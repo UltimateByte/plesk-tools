@@ -146,6 +146,9 @@ lookups). The default cron runs both, so no change is needed there.
 The off-server (and suspended) actions are reversible because the desired state
 of every monitor is recomputed each cleanup: once a domain points home and is
 active again, its monitor is moved back to its group, resumed and un-suffixed.
+The tool only ever resumes / un-suffixes monitors **it** paused (those carrying
+a managed suffix, `OFFSERVER_NAME_SUFFIX` / `SUSPENDED_NAME_SUFFIX`) — a monitor
+you paused manually in Kuma is never touched.
 
 ## Grouping by owner
 
