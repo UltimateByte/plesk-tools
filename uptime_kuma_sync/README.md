@@ -61,7 +61,7 @@ uptime-kuma-sync [OPTION]
 |---|---|
 | `--install` | Set up the Python venv, dependencies, and config file |
 | `--update` | Re-download scripts from GitHub (preserves `.env`) |
-| `--sync` | List Plesk domains and create missing monitors |
+| `--sync` | Create missing monitors (on-server only) and group them by owner |
 | `--sync --dry-run` | Preview what would be created without making changes |
 | `--list` | List existing monitors in the Uptime Kuma group |
 | `--cleanup` | Remove obsolete monitors and apply off-server handling |
@@ -170,7 +170,12 @@ reseller's Plesk login. The owner is resolved from `domains.vendor_id`
 | `RESELLER_GROUP_PREFIX` | *(empty)* | Optional prefix for reseller group names (e.g. `Reseller: `) |
 | `RESELLER_GROUP_PARENT` | *(empty)* | Where to create reseller groups: empty = top level, or a group ID to nest under |
 
-Existing monitors are moved into the correct group during `--cleanup`.
+Grouping happens during `--sync` (synchronisation): missing monitors are
+created in their owner group, and existing monitors are moved into it. `--sync`
+reports which reseller groups it would create. `--cleanup` does not touch owner
+grouping — it only deletes obsolete monitors and applies off-server / suspended
+state (monitors the tool paused are left for `--cleanup`, never regrouped by
+`--sync`).
 
 ## Suspended domains
 
