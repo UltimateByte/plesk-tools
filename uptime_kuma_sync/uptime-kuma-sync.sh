@@ -10,6 +10,8 @@ main() {
 
 set -euo pipefail
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+# Silence pip's "a new release is available" notice (cosmetic, clutters logs/cron)
+export PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # -----------------------------------------------------------------------------
 # Paths
@@ -303,7 +305,8 @@ cmd_update() {
         log "WARNING: Failed to download bash script update"
     fi
 
-    # Upgrade pip deps
+    # Upgrade pip itself, then deps
+    "$VENV_DIR/bin/pip" install --upgrade pip -q
     "$VENV_DIR/bin/pip" install --upgrade "python-socketio[client]" websocket-client dnspython -q
 
     # Add any newly-introduced config keys to an existing .env
