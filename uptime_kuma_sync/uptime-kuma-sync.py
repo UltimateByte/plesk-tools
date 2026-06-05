@@ -519,6 +519,19 @@ def cmd_sync(dry_run=False):
         print("  Nothing to create, all domains already monitored")
         return
 
+    # Don't create monitors for domains that resolve elsewhere. "unknown"
+    # (no/failed resolution, e.g. DNS still propagating) is given the benefit of
+    # the doubt and created. Existing monitors going off-server are cleanup's job.
+    if config.get("offserver_action", "report") != "off":
+        states = resolve_states(list(to_create))
+        offsite = sorted(n for n in to_create if states.get(n) == "off")
+        for n in offsite:
+            print(f"  Skipping (off-server, points elsewhere): {n}")
+            del to_create[n]
+        if not to_create:
+            print("  Nothing to create (all missing domains are off-server)")
+            return
+
     if dry_run:
         by_reseller = config.get("grouping_mode", "by-reseller") == "by-reseller"
         prefix = config.get("reseller_group_prefix") or ""

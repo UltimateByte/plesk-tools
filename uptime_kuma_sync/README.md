@@ -140,8 +140,10 @@ NXDOMAIN.
 | `OFFSERVER_GROUP_ID` | *(empty)* | Override: use this existing group ID as-is (no lookup/creation) |
 | `OFFSERVER_GROUP_PARENT` | *(empty)* | Where to create the group: empty = top level, or a group ID to nest under |
 
-Off-server detection only runs on `--cleanup`, so `--sync` stays fast (no DNS
-lookups). The default cron runs both, so no change is needed there.
+`--sync` resolves only the domains it is about to create, and **skips creating
+monitors for domains that already point elsewhere** (a domain that doesn't
+resolve yet is still created — it may be propagating). Reconciling monitors that
+later go off-server is `--cleanup`'s job. The default cron runs both.
 
 The off-server (and suspended) actions are reversible because the desired state
 of every monitor is recomputed each cleanup: once a domain points home and is

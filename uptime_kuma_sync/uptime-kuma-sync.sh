@@ -380,15 +380,17 @@ list_plesk_domains() {
         exit 1
     fi
 
-    # Columns: name, seoRedirect, reseller login (empty unless owned via a
-    # reseller, i.e. vendor is type 'reseller'), status (0=active, 16/32=suspended).
+    # Query columns: name, seoRedirect, status (0=active, 16/32=suspended),
+    # reseller login. reseller is queried LAST and is the only field that can be
+    # empty (admin/direct domains) - keeping it last avoids the bash whitespace-IFS
+    # field-collapse that would otherwise shift status into the reseller slot.
     local raw
-    # Main domains with seo redirect preference + reseller + status
-    raw=$(plesk db -Ne "SELECT d.name, COALESCE(p.val, 'none'), COALESCE(v.login, ''), d.status FROM domains d LEFT JOIN dom_param p ON d.id = p.dom_id AND p.param = 'seoRedirect' LEFT JOIN clients v ON d.vendor_id = v.id AND v.type = 'reseller' WHERE d.status IN (0, 16, 32) AND d.htype IN ('vrt_hst', 'std_fwd', 'frm_fwd')" | cat)
+    # Main domains with seo redirect preference + status + reseller
+    raw=$(plesk db -Ne "SELECT d.name, COALESCE(p.val, 'none'), d.status, COALESCE(v.login, '') FROM domains d LEFT JOIN dom_param p ON d.id = p.dom_id AND p.param = 'seoRedirect' LEFT JOIN clients v ON d.vendor_id = v.id AND v.type = 'reseller' WHERE d.status IN (0, 16, 32) AND d.htype IN ('vrt_hst', 'std_fwd', 'frm_fwd')" | cat)
 
     # Domain aliases with web hosting enabled (reseller/status inherited from parent)
     local aliases
-    aliases=$(plesk db -Ne "SELECT da.name, 'none', COALESCE(v.login, ''), d.status FROM domain_aliases da JOIN domains d ON da.dom_id = d.id LEFT JOIN clients v ON d.vendor_id = v.id AND v.type = 'reseller' WHERE da.status = 0 AND da.web = 'true' AND d.status IN (0, 16, 32)" | cat)
+    aliases=$(plesk db -Ne "SELECT da.name, 'none', d.status, COALESCE(v.login, '') FROM domain_aliases da JOIN domains d ON da.dom_id = d.id LEFT JOIN clients v ON d.vendor_id = v.id AND v.type = 'reseller' WHERE da.status = 0 AND da.web = 'true' AND d.status IN (0, 16, 32)" | cat)
 
     # Merge both lists
     if [[ -n "$aliases" ]]; then
@@ -400,8 +402,9 @@ list_plesk_domains() {
     local excluded=0
     local suspended=0
 
-    # Tab-separated output: domain<TAB>seo<TAB>url<TAB>reseller<TAB>status
-    while IFS=$'\t' read -r domain seo_redirect reseller status; do
+    # Read order matches the query (status before the possibly-empty reseller);
+    # the output file keeps the logical order: domain<TAB>seo<TAB>url<TAB>reseller<TAB>status
+    while IFS=$'\t' read -r domain seo_redirect status reseller; do
         [[ -z "$domain" ]] && continue
 
         # Skip excluded patterns
