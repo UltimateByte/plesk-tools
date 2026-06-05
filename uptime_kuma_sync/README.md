@@ -134,17 +134,25 @@ NXDOMAIN.
 
 ### Off-server group (for `move`)
 
-By default the off-server group is created as a **subgroup under each domain's
-owner group** — an off-server domain of reseller `X` lands in `X > Off-server`,
-admin/direct ones in `main > Off-server`. On recovery it is moved back out to
-its owner group.
+Uptime Kuma has no usable nested subgroups, so off-server groups are **top-level,
+one per owner** that has off-server sites: `<reseller> Off-server` (e.g.
+`digisense Off-server`), or just `Off-server` for admin/direct domains. They are
+created only when needed, and **empty off-server groups are deleted** during
+cleanup. On recovery a monitor is moved back out to its owner group.
 
 | Setting | Default | Description |
 |---|---|---|
-| `OFFSERVER_GROUP_NAME` | `Off-server` | Off-server group name, auto-created if missing |
-| `OFFSERVER_NEST_UNDER_OWNER` | `true` | `true` = a subgroup per owner group; `false` = one global off-server group |
-| `OFFSERVER_GROUP_ID` | *(empty)* | Override: use this existing group ID as-is (no lookup/creation/nesting) |
-| `OFFSERVER_GROUP_PARENT` | *(empty)* | Placement of the global group when nesting is off: empty = top level, or a group ID |
+| `OFFSERVER_GROUP_NAME` | `Off-server` | Off-server group label (suffixed with the reseller name per owner) |
+| `OFFSERVER_GROUP_ID` | *(empty)* | Override: send all off-server monitors to one existing group instead |
+| `OFFSERVER_GROUP_PARENT` | *(empty)* | Placement of auto-created off-server groups: empty = top level, or a group ID |
+
+### Domains that stop resolving
+
+A domain that returns no address at all (NXDOMAIN / no A/AAAA) is **left in its
+current group but paused** (suffix `UNRESOLVED_NAME_SUFFIX`, default ` [no-dns]`),
+and resumed automatically once it resolves again. A merely *transient* lookup
+failure (timeout / SERVFAIL) is treated as inconclusive and changes nothing, so
+a resolver hiccup never pauses everything.
 
 `--sync` resolves only the domains it is about to create, and **skips creating
 monitors for domains that already point elsewhere** (a domain that doesn't

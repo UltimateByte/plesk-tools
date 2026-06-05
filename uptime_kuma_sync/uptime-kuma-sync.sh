@@ -55,25 +55,25 @@ print_offserver_config() {
 # resumed (and moved back to the main group).
 OFFSERVER_ACTION="report"
 
-# Off-server group (used when OFFSERVER_ACTION=move). Looked up by name and
-# auto-created if missing.
+# Off-server group label (used when OFFSERVER_ACTION=move). One top-level group
+# is auto-created per owner that has off-server sites, named "<reseller> <label>"
+# (e.g. "digisense Off-server"), or just "<label>" for admin/direct domains.
+# (Kuma has no usable nested subgroups, hence top-level sibling groups.)
 OFFSERVER_GROUP_NAME="Off-server"
-# By default the off-server group is created as a SUBGROUP under each domain's
-# owner group (its reseller group, or the main group) - so an off-server domain
-# of reseller X lands in "X > Off-server". Set to false for a single global
-# off-server group instead.
-OFFSERVER_NEST_UNDER_OWNER="true"
-# Override: set to a numeric group ID to use one existing group as-is (no lookup,
-# no creation, no nesting). Leave empty to use OFFSERVER_GROUP_NAME.
+# Override: set to a numeric group ID to send ALL off-server monitors to one
+# existing group as-is (no per-owner groups). Leave empty for the per-owner ones.
 OFFSERVER_GROUP_ID=""
-# Placement of the global off-server group when NEST_UNDER_OWNER=false: empty =
-# top level (root), or a numeric group ID to nest it under.
+# Placement of auto-created off-server groups: empty = top level (root), or a
+# numeric group ID to nest them under.
 OFFSERVER_GROUP_PARENT=""
 
 # Cosmetic suffix appended to a monitor's name while it is off-server (move/pause
 # actions). Stripped automatically when matching, so it never creates duplicates.
 # Set empty to disable renaming.
 OFFSERVER_NAME_SUFFIX=" [off-server]"
+# Suffix marking a monitor the tool paused because the domain no longer resolves
+# (NXDOMAIN / no address). Kept in place, just paused; resumed when it resolves again.
+UNRESOLVED_NAME_SUFFIX=" [no-dns]"
 
 # Public DNS resolver used to check where domains point (avoids local bind,
 # which on a Plesk DNS master would always answer with the local IP).
@@ -126,8 +126,8 @@ ensure_env_keys() {
         printf '\n# Cosmetic suffix on a monitor name while off-server (stripped when matching).\nOFFSERVER_NAME_SUFFIX=" [off-server]"\n' >> "$ENV_FILE"
         added=1
     fi
-    if ! grep -q '^OFFSERVER_NEST_UNDER_OWNER=' "$ENV_FILE"; then
-        printf '\n# Off-server group as a subgroup under each owner group (true), or one global group (false).\nOFFSERVER_NEST_UNDER_OWNER="true"\n' >> "$ENV_FILE"
+    if ! grep -q '^UNRESOLVED_NAME_SUFFIX=' "$ENV_FILE"; then
+        printf '\n# Suffix marking a monitor paused because the domain no longer resolves (NXDOMAIN).\nUNRESOLVED_NAME_SUFFIX=" [no-dns]"\n' >> "$ENV_FILE"
         added=1
     fi
     if ! grep -q '^GROUPING_MODE=' "$ENV_FILE"; then
@@ -467,8 +467,8 @@ run_python() {
     "offserver_group_name": "${OFFSERVER_GROUP_NAME:-Off-server}",
     "offserver_group_id": ${OFFSERVER_GROUP_ID:-null},
     "offserver_group_parent": ${OFFSERVER_GROUP_PARENT:-null},
-    "offserver_nest_under_owner": "${OFFSERVER_NEST_UNDER_OWNER:-true}",
     "offserver_name_suffix": "${OFFSERVER_NAME_SUFFIX:- [off-server]}",
+    "unresolved_name_suffix": "${UNRESOLVED_NAME_SUFFIX:- [no-dns]}",
     "grouping_mode": "${GROUPING_MODE:-by-reseller}",
     "reseller_group_prefix": "${RESELLER_GROUP_PREFIX:-}",
     "reseller_group_parent": ${RESELLER_GROUP_PARENT:-null},

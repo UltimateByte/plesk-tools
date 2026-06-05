@@ -162,9 +162,10 @@ SUSPENDED_STATUSES = (16, 32)
 
 
 def managed_suffixes():
-    """Suffixes the tool appends to mark monitors IT paused (off-server/suspended)."""
+    """Suffixes the tool appends to mark monitors IT paused (off-server/suspended/no-dns)."""
     return [s for s in (config.get("offserver_name_suffix", "") or "",
-                        config.get("suspended_name_suffix", "") or "") if s]
+                        config.get("suspended_name_suffix", "") or "",
+                        config.get("unresolved_name_suffix", "") or "") if s]
 
 
 def strip_suffix(name):
@@ -232,13 +233,17 @@ def resolve_states(names):
                 answer = resolver.resolve(name, rdtype)
                 ips.update(norm(r.address) for r in answer)
             except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+                # name (or this record type) has no address -> definitive
                 continue
             except dns.exception.DNSException:
-                # timeout / SERVFAIL / no nameservers reachable -> inconclusive
+                # timeout / SERVFAIL / resolver unreachable -> transient, inconclusive
                 return name, "unknown"
-        if not ips:
-            return name, "unknown"
-        return name, ("on" if ips & local_ips else "off")
+        if ips:
+            return name, ("on" if ips & local_ips else "off")
+        # Got authoritative answers but no A/AAAA -> the domain doesn't resolve
+        # to anything reachable (NXDOMAIN / no address record). Distinct from a
+        # transient failure so cleanup can act on it (pause) without flapping.
+        return name, "nxdomain"
 
     states = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=20) as pool:
@@ -254,35 +259,6 @@ def find_group_by_name(name):
     """Return [ids] of group monitors with the given name."""
     return [int(mid) for mid, m in monitor_list.items()
             if m.get("type") == "group" and m.get("name") == name]
-
-
-def resolve_offserver_group(create=False, dry_run=False):
-    """Return the off-server group ID, or None.
-
-    Priority: an explicit numeric OFFSERVER_GROUP_ID override, otherwise look up
-    OFFSERVER_GROUP_NAME (creating it when create=True and it does not exist).
-    """
-    override = config.get("offserver_group_id")
-    if override not in (None, "", 0):
-        return int(override)
-
-    name = config.get("offserver_group_name") or "Off-server"
-    found = find_group_by_name(name)
-    if found:
-        if len(found) > 1:
-            print(f"  WARNING: multiple groups named '{name}', using ID {found[0]}")
-        return found[0]
-
-    if not create:
-        return None
-    if dry_run:
-        print(f"  Would create off-server group '{name}'")
-        return None
-
-    parent = config.get("offserver_group_parent")
-    parent = int(parent) if parent not in (None, "", 0) else None
-    gid = create_group(name, parent)
-    return gid
 
 
 _reseller_group_cache = {}
@@ -349,49 +325,72 @@ def ensure_group(spec):
     return config["parent_group_id"]
 
 
+_offserver_group_cache = {}
+
+
+def offserver_group_label():
+    return config.get("offserver_group_name") or "Off-server"
+
+
+def offserver_group_name(info):
+    """Name of the off-server group for a domain's owner.
+
+    Kuma has no usable nested subgroups, so off-server groups are top-level and
+    named per owner: "<reseller> Off-server", or just "Off-server" for
+    admin/direct domains. One extra group per owner that has off-server sites.
+    """
+    label = offserver_group_label()
+    owner = owner_group_spec(info)
+    if owner[0] == "reseller":
+        return f"{(config.get('reseller_group_prefix') or '') + owner[1]} {label}"
+    return label
+
+
 def offserver_group_ids():
-    """All group ids that count as an off-server group (override id, or every
-    group named OFFSERVER_GROUP_NAME - there is one per owner when nested)."""
+    """All group ids that are off-server groups: the override, or every group
+    named "<label>" or "... <label>" (one per owner)."""
     override = config.get("offserver_group_id")
     if override not in (None, "", 0):
         return {int(override)}
-    return set(find_group_by_name(config.get("offserver_group_name") or "Off-server"))
+    label = offserver_group_label()
+    ids = set()
+    for mid, m in monitor_list.items():
+        if m.get("type") == "group":
+            nm = m.get("name", "")
+            if nm == label or nm.endswith(" " + label):
+                ids.add(int(mid))
+    return ids
 
 
 def offserver_group_for(info, create=False, dry_run=False):
     """Target off-server group for a domain (move action) -> (gid_or_None, label).
 
-    Default: a subgroup named OFFSERVER_GROUP_NAME nested under the domain's owner
-    group (reseller / main). OFFSERVER_GROUP_ID overrides with a fixed group;
-    OFFSERVER_NEST_UNDER_OWNER=false falls back to one global off-server group.
+    A top-level group named per owner ("<reseller> Off-server"). Cached per run
+    so it is not recreated for every off-server domain of the same owner.
+    OFFSERVER_GROUP_ID overrides with a single fixed group.
     """
     override = config.get("offserver_group_id")
     if override not in (None, "", 0):
         return int(override), "off-server group"
 
-    name = config.get("offserver_group_name") or "Off-server"
-    nested = str(config.get("offserver_nest_under_owner", "true")).strip().lower() \
-        in ("true", "1", "yes", "on")
+    name = offserver_group_name(info)
+    if name in _offserver_group_cache:
+        return _offserver_group_cache[name], f"group '{name}'"
 
-    if not nested:
-        gid = resolve_offserver_group(create=create and not dry_run)
-        return gid, f"off-server group '{name}'"
-
-    owner_spec = owner_group_spec(info)
-    owner_label = group_lookup(owner_spec)[1]
-    owner_gid = ensure_group(owner_spec) if (create and not dry_run) else group_lookup(owner_spec)[0]
-    label = f"off-server group under {owner_label}"
-    if owner_gid is None:
-        return None, label
-
-    found = [int(mid) for mid, m in monitor_list.items()
-             if m.get("type") == "group" and m.get("name") == name
-             and m.get("parent") == owner_gid]
+    found = find_group_by_name(name)
     if found:
-        return found[0], label
+        _offserver_group_cache[name] = found[0]
+        return found[0], f"group '{name}'"
+
     if create and not dry_run:
-        return create_group(name, parent=owner_gid), label
-    return None, label
+        parent = config.get("offserver_group_parent")
+        parent = int(parent) if parent not in (None, "", 0) else None
+        gid = create_group(name, parent)
+        if gid is not None:
+            _offserver_group_cache[name] = gid
+        return gid, f"group '{name}'"
+
+    return None, f"group '{name}'"
 
 
 def home_group_id(info, create=False, dry_run=False):
@@ -704,6 +703,35 @@ def cmd_cleanup(dry_run=False):
     if not dry_run:
         print(f"\nState changes: {changed} monitor(s)")
 
+    # --- 4) Delete now-empty off-server groups ---
+    cleanup_empty_offserver_groups(dry_run)
+
+
+def cleanup_empty_offserver_groups(dry_run):
+    """Delete off-server groups that have no child monitors.
+
+    Empties caused by this run are caught next run (monitor_list isn't refreshed
+    after edits). The OFFSERVER_GROUP_ID override group is never deleted.
+    """
+    override = config.get("offserver_group_id")
+    override = int(override) if override not in (None, "", 0) else None
+
+    child_count = {}
+    for m in monitor_list.values():
+        p = m.get("parent")
+        if p is not None:
+            child_count[int(p)] = child_count.get(int(p), 0) + 1
+
+    for gid in offserver_group_ids():
+        if gid == override:
+            continue
+        if child_count.get(gid, 0) == 0:
+            name = monitor_list.get(str(gid), {}).get("name", str(gid))
+            if dry_run:
+                print(f"  Would delete empty off-server group: '{name}' [{gid}]")
+            elif delete_monitor(gid, f"group '{name}'"):
+                time.sleep(0.2)
+
 
 def reconcile_state(name, info, mon, dns_state, dry_run):
     """Apply off-server and suspended policy to one monitor (cleanup).
@@ -719,6 +747,7 @@ def reconcile_state(name, info, mon, dns_state, dry_run):
     offserver_action = config.get("offserver_action", "report")
     off_suffix = config.get("offserver_name_suffix", "") or ""
     susp_suffix = config.get("suspended_name_suffix", "") or ""
+    nodns_suffix = config.get("unresolved_name_suffix", "") or ""
 
     delete = False
     paused = False
@@ -727,6 +756,7 @@ def reconcile_state(name, info, mon, dns_state, dry_run):
     reason = []
 
     if status in SUSPENDED_STATUSES:
+        # Plesk suspension is definitive and overrides the DNS dimension.
         if suspended_action == "delete":
             delete = True
             reason.append("suspended")
@@ -734,9 +764,17 @@ def reconcile_state(name, info, mon, dns_state, dry_run):
             paused = True
             desired_suffix = susp_suffix
             reason.append("suspended")
-
-    if dns_state == "off" and offserver_action not in ("off", "report"):
-        if offserver_action == "delete":
+        # keep -> active (recovered below if it was tool-paused)
+    elif offserver_action == "off":
+        return False  # feature disabled
+    elif dns_state == "unknown":
+        # transient/inconclusive resolution -> leave the monitor exactly as-is
+        return False
+    elif dns_state == "off":
+        if offserver_action == "report":
+            print(f"  off-server (report only): {name}")
+            return False
+        elif offserver_action == "delete":
             delete = True
             reason.append("off-server")
         elif offserver_action == "pause":
@@ -748,8 +786,12 @@ def reconcile_state(name, info, mon, dns_state, dry_run):
             desired_suffix = off_suffix
             move_to_offgroup = True
             reason.append("off-server")
-    elif dns_state == "off" and offserver_action == "report":
-        print(f"  off-server (report only): {name}")
+    elif dns_state == "nxdomain":
+        # No address at all: keep it where it is, just suspend monitoring.
+        paused = True
+        desired_suffix = nodns_suffix
+        reason.append("no-dns")
+    # dns_state == "on": active, recovered below
 
     if delete:
         if dry_run:
