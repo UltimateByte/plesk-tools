@@ -35,6 +35,95 @@ load_config() {
     source "$ENV_FILE"
 }
 
+# Off-server detection config block (appended to new and upgraded .env files).
+print_offserver_config() {
+    cat <<'ENVEOF'
+
+# -----------------------------------------------------------------------------
+# Off-server detection (evaluated during --cleanup only)
+# -----------------------------------------------------------------------------
+# A domain is "off-server" when it no longer resolves (via DNS_RESOLVER) to any
+# of this server's interface IPs. Action to take for such domains:
+#   report  - only log off-server domains, change nothing (safe default)
+#   move    - move the monitor into the off-server group and pause it
+#   pause   - pause the monitor in place (no group change)
+#   delete  - delete the monitor (like a domain removed from Plesk)
+#   off     - disable the feature entirely (skip DNS resolution)
+# move/pause are reversible: when a domain points back here, the monitor is
+# resumed (and moved back to the main group).
+OFFSERVER_ACTION="report"
+
+# Off-server group (used when OFFSERVER_ACTION=move).
+# Looked up by name and auto-created if missing.
+OFFSERVER_GROUP_NAME="Off-server"
+# Override: set to a numeric group ID to use an existing group as-is
+# (no name lookup, no creation). Leave empty to use OFFSERVER_GROUP_NAME.
+OFFSERVER_GROUP_ID=""
+# Placement when auto-creating the group: empty = top level (root),
+# or a numeric group ID to nest the off-server group under it.
+OFFSERVER_GROUP_PARENT=""
+
+# Cosmetic suffix appended to a monitor's name while it is off-server (move/pause
+# actions). Stripped automatically when matching, so it never creates duplicates.
+# Set empty to disable renaming.
+OFFSERVER_NAME_SUFFIX=" [off-server]"
+
+# Public DNS resolver used to check where domains point (avoids local bind,
+# which on a Plesk DNS master would always answer with the local IP).
+DNS_RESOLVER="1.1.1.1"
+ENVEOF
+}
+
+# Grouping / suspended-domain config block.
+print_grouping_config() {
+    cat <<'ENVEOF'
+
+# -----------------------------------------------------------------------------
+# Monitor grouping by owner
+# -----------------------------------------------------------------------------
+# How to lay out monitors into Uptime Kuma groups:
+#   flat        - all monitors in the main group (PARENT_GROUP_ID)
+#   by-reseller - one group per reseller (its domains + its clients' domains);
+#                 admin-owned and direct-customer domains stay in the main group
+GROUPING_MODE="by-reseller"
+# Optional prefix for reseller group names (e.g. "Reseller: "). Empty = the
+# reseller's Plesk login is used as-is.
+RESELLER_GROUP_PREFIX=""
+# Placement of auto-created reseller groups: empty = top level (root),
+# or a numeric group ID to nest them under.
+RESELLER_GROUP_PARENT=""
+
+# -----------------------------------------------------------------------------
+# Suspended domains (Plesk status 16/32)
+# -----------------------------------------------------------------------------
+# Plesk does not distinguish accidental from deliberate suspension, so one policy:
+#   keep   - keep monitoring and alerting (catch accidental suspensions) [default]
+#   pause  - keep the monitor but pause it (no alert), resumed on reactivation
+#   delete - do not monitor suspended domains (recreated when reactivated)
+SUSPENDED_ACTION="keep"
+ENVEOF
+}
+
+# Add any config keys missing from an existing .env (idempotent, run on --update).
+ensure_env_keys() {
+    [[ -f "$ENV_FILE" ]] || return 0
+    local added=0
+    if ! grep -q '^OFFSERVER_ACTION=' "$ENV_FILE"; then
+        print_offserver_config >> "$ENV_FILE"
+        added=1
+    fi
+    if ! grep -q '^OFFSERVER_NAME_SUFFIX=' "$ENV_FILE"; then
+        printf '\n# Cosmetic suffix on a monitor name while off-server (stripped when matching).\nOFFSERVER_NAME_SUFFIX=" [off-server]"\n' >> "$ENV_FILE"
+        added=1
+    fi
+    if ! grep -q '^GROUPING_MODE=' "$ENV_FILE"; then
+        print_grouping_config >> "$ENV_FILE"
+        added=1
+    fi
+    [[ $added -eq 1 ]] && log "Added new settings to $ENV_FILE (defaults applied, review them)"
+    return 0
+}
+
 # -----------------------------------------------------------------------------
 # Logging
 # -----------------------------------------------------------------------------
@@ -164,6 +253,9 @@ LOG_RETENTION_DAYS=30
 LOGIN_TIMEOUT=15
 ENVEOF
 
+        print_offserver_config >> "$ENV_FILE"
+        print_grouping_config >> "$ENV_FILE"
+
         chmod 600 "$ENV_FILE"
         log "Config saved to $ENV_FILE"
     fi
@@ -212,7 +304,10 @@ cmd_update() {
     fi
 
     # Upgrade pip deps
-    "$VENV_DIR/bin/pip" install --upgrade "python-socketio[client]" websocket-client -q
+    "$VENV_DIR/bin/pip" install --upgrade "python-socketio[client]" websocket-client dnspython -q
+
+    # Add any newly-introduced config keys to an existing .env
+    ensure_env_keys
 
     log "=== Update complete ==="
 }
@@ -243,7 +338,25 @@ setup_venv() {
 
     log "Installing Python dependencies..."
     "$VENV_DIR/bin/pip" install --upgrade pip -q
-    "$VENV_DIR/bin/pip" install --upgrade "python-socketio[client]" websocket-client -q
+    "$VENV_DIR/bin/pip" install --upgrade "python-socketio[client]" websocket-client dnspython -q
+}
+
+# -----------------------------------------------------------------------------
+# Local server IPs (used by the Python off-server detection during --cleanup)
+# -----------------------------------------------------------------------------
+# Collect this server's global (public-facing) interface IPs as a JSON array.
+# Uses iproute2 (`ip`), present on every modern distro - no package install.
+get_local_ips_json() {
+    local ips
+    ips=$(ip -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1)
+    local first=1 ip out="["
+    while IFS= read -r ip; do
+        [[ -z "$ip" ]] && continue
+        if [[ $first -eq 1 ]]; then first=0; else out+=","; fi
+        out+="\"$ip\""
+    done <<< "$ips"
+    out+="]"
+    echo "$out"
 }
 
 # -----------------------------------------------------------------------------
@@ -257,13 +370,15 @@ list_plesk_domains() {
         exit 1
     fi
 
+    # Columns: name, seoRedirect, reseller login (empty unless owned via a
+    # reseller, i.e. vendor is type 'reseller'), status (0=active, 16/32=suspended).
     local raw
-    # Main domains with seo redirect preference
-    raw=$(plesk db -Ne "SELECT d.name, COALESCE(p.val, 'none') FROM domains d LEFT JOIN dom_param p ON d.id = p.dom_id AND p.param = 'seoRedirect' WHERE d.status = 0 AND d.htype IN ('vrt_hst', 'std_fwd', 'frm_fwd')" | cat)
+    # Main domains with seo redirect preference + reseller + status
+    raw=$(plesk db -Ne "SELECT d.name, COALESCE(p.val, 'none'), COALESCE(v.login, ''), d.status FROM domains d LEFT JOIN dom_param p ON d.id = p.dom_id AND p.param = 'seoRedirect' LEFT JOIN clients v ON d.vendor_id = v.id AND v.type = 'reseller' WHERE d.status IN (0, 16, 32) AND d.htype IN ('vrt_hst', 'std_fwd', 'frm_fwd')" | cat)
 
-    # Domain aliases with web hosting enabled
+    # Domain aliases with web hosting enabled (reseller/status inherited from parent)
     local aliases
-    aliases=$(plesk db -Ne "SELECT da.name, 'none' FROM domain_aliases da JOIN domains d ON da.dom_id = d.id WHERE da.status = 0 AND da.web = 'true' AND d.status = 0" | cat)
+    aliases=$(plesk db -Ne "SELECT da.name, 'none', COALESCE(v.login, ''), d.status FROM domain_aliases da JOIN domains d ON da.dom_id = d.id LEFT JOIN clients v ON d.vendor_id = v.id AND v.type = 'reseller' WHERE da.status = 0 AND da.web = 'true' AND d.status IN (0, 16, 32)" | cat)
 
     # Merge both lists
     if [[ -n "$aliases" ]]; then
@@ -273,8 +388,10 @@ list_plesk_domains() {
     : > "$DOMAINS_FILE"
     local count=0
     local excluded=0
+    local suspended=0
 
-    while IFS=$'\t' read -r domain seo_redirect; do
+    # Tab-separated output: domain<TAB>seo<TAB>url<TAB>reseller<TAB>status
+    while IFS=$'\t' read -r domain seo_redirect reseller status; do
         [[ -z "$domain" ]] && continue
 
         # Skip excluded patterns
@@ -290,11 +407,13 @@ list_plesk_domains() {
             url="https://${domain}/"
         fi
 
-        echo "$domain $seo_redirect $url" >> "$DOMAINS_FILE"
+        [[ "${status:-0}" != "0" ]] && suspended=$((suspended + 1))
+
+        printf '%s\t%s\t%s\t%s\t%s\n' "$domain" "$seo_redirect" "$url" "$reseller" "${status:-0}" >> "$DOMAINS_FILE"
         count=$((count + 1))
     done <<< "$raw"
 
-    log "Found $count domains + aliases ($excluded excluded)"
+    log "Found $count domains + aliases ($excluded excluded, $suspended suspended)"
 }
 
 # -----------------------------------------------------------------------------
@@ -303,6 +422,9 @@ list_plesk_domains() {
 run_python() {
     local action="$1"
     shift
+
+    local local_ips_json
+    local_ips_json=$(get_local_ips_json)
 
     local config_json
     config_json=$(cat <<PYEOF
@@ -318,7 +440,18 @@ run_python() {
     "monitor_timeout": $MONITOR_TIMEOUT,
     "monitor_max_retries": $MONITOR_MAX_RETRIES,
     "monitor_max_redirects": $MONITOR_MAX_REDIRECTS,
-    "login_timeout": ${LOGIN_TIMEOUT:-15}
+    "login_timeout": ${LOGIN_TIMEOUT:-15},
+    "offserver_action": "${OFFSERVER_ACTION:-report}",
+    "offserver_group_name": "${OFFSERVER_GROUP_NAME:-Off-server}",
+    "offserver_group_id": ${OFFSERVER_GROUP_ID:-null},
+    "offserver_group_parent": ${OFFSERVER_GROUP_PARENT:-null},
+    "offserver_name_suffix": "${OFFSERVER_NAME_SUFFIX:- [off-server]}",
+    "grouping_mode": "${GROUPING_MODE:-by-reseller}",
+    "reseller_group_prefix": "${RESELLER_GROUP_PREFIX:-}",
+    "reseller_group_parent": ${RESELLER_GROUP_PARENT:-null},
+    "suspended_action": "${SUSPENDED_ACTION:-keep}",
+    "dns_resolver": "${DNS_RESOLVER:-1.1.1.1}",
+    "local_ips": $local_ips_json
 }
 PYEOF
 )

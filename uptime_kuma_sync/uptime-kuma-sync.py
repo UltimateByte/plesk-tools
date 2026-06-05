@@ -127,6 +127,14 @@ def call_with_callback(event, data, timeout=30):
 # Domain File Parsing
 # -----------------------------------------------------------------------------
 def load_domains():
+    """Parse the (tab-separated) Plesk domains list.
+
+    Columns: name, seoRedirect, url, reseller, status.
+    Returns {name: {"url", "reseller", "status"}} where reseller is "" for
+    admin/direct-customer domains and status is the Plesk domain status int
+    (0=active, 16/32=suspended). The file is regenerated every run, so it is
+    always in the current format.
+    """
     domains = {}
     path = Path(config["domains_file"])
     if not path.exists():
@@ -136,32 +144,252 @@ def load_domains():
     for line in path.read_text().strip().split("\n"):
         if not line.strip():
             continue
-        parts = line.split()
+        parts = line.split("\t")
         if len(parts) >= 3:
             name = parts[0]
             url = parts[2]
-            domains[name] = url
+            reseller = parts[3] if len(parts) >= 4 else ""
+            try:
+                status = int(parts[4]) if len(parts) >= 5 else 0
+            except ValueError:
+                status = 0
+            domains[name] = {"url": url, "reseller": reseller, "status": status}
 
     return domains
+
+
+SUSPENDED_STATUSES = (16, 32)
+
+
+def name_suffix():
+    return config.get("offserver_name_suffix", "") or ""
+
+
+def strip_suffix(name):
+    suffix = name_suffix()
+    if suffix and name.endswith(suffix):
+        return name[:-len(suffix)]
+    return name
+
+
+# -----------------------------------------------------------------------------
+# Off-server detection (DNS)
+# -----------------------------------------------------------------------------
+def resolve_states(names):
+    """Classify each domain against the server's local IPs.
+
+    Returns {name: "on"|"off"|"unknown"}:
+      on      - resolves to at least one local interface IP
+      off     - resolves, but to none of our IPs (points elsewhere)
+      unknown - no resolution / lookup error -> never acted upon
+
+    Resolution goes through the configured public resolver (DNS_RESOLVER) so a
+    Plesk box that is itself the DNS master for the zone does not just answer
+    with its own local IP. Done in parallel for speed on large fleets.
+    """
+    import concurrent.futures
+    import ipaddress
+
+    try:
+        import dns.resolver
+        import dns.exception
+    except ImportError:
+        print("  WARNING: dnspython not installed, skipping off-server detection")
+        print("  Run: uptime-kuma-sync --update")
+        return {name: "unknown" for name in names}
+
+    def norm(ip):
+        # Normalise to a canonical form so IPv6 textual differences
+        # (compression, case) don't cause false mismatches.
+        try:
+            return str(ipaddress.ip_address(ip))
+        except ValueError:
+            return ip
+
+    local_ips = {norm(ip) for ip in config.get("local_ips", [])}
+    resolver_ip = config.get("dns_resolver", "1.1.1.1")
+
+    resolver = dns.resolver.Resolver(configure=False)
+    resolver.nameservers = [resolver_ip]
+    resolver.lifetime = 5.0
+    resolver.timeout = 3.0
+
+    def classify(name):
+        ips = set()
+        for rdtype in ("A", "AAAA"):
+            try:
+                answer = resolver.resolve(name, rdtype)
+                ips.update(norm(r.address) for r in answer)
+            except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+                continue
+            except dns.exception.DNSException:
+                # timeout / SERVFAIL / no nameservers reachable -> inconclusive
+                return name, "unknown"
+        if not ips:
+            return name, "unknown"
+        return name, ("on" if ips & local_ips else "off")
+
+    states = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as pool:
+        for name, state in pool.map(classify, names):
+            states[name] = state
+    return states
 
 
 # -----------------------------------------------------------------------------
 # Monitor Operations
 # -----------------------------------------------------------------------------
-def get_existing_monitors():
-    existing = {}
-    parent_id = config["parent_group_id"]
+def find_group_by_name(name):
+    """Return [ids] of group monitors with the given name."""
+    return [int(mid) for mid, m in monitor_list.items()
+            if m.get("type") == "group" and m.get("name") == name]
+
+
+def resolve_offserver_group(create=False, dry_run=False):
+    """Return the off-server group ID, or None.
+
+    Priority: an explicit numeric OFFSERVER_GROUP_ID override, otherwise look up
+    OFFSERVER_GROUP_NAME (creating it when create=True and it does not exist).
+    """
+    override = config.get("offserver_group_id")
+    if override not in (None, "", 0):
+        return int(override)
+
+    name = config.get("offserver_group_name") or "Off-server"
+    found = find_group_by_name(name)
+    if found:
+        if len(found) > 1:
+            print(f"  WARNING: multiple groups named '{name}', using ID {found[0]}")
+        return found[0]
+
+    if not create:
+        return None
+    if dry_run:
+        print(f"  Would create off-server group '{name}'")
+        return None
+
+    parent = config.get("offserver_group_parent")
+    parent = int(parent) if parent not in (None, "", 0) else None
+    gid = create_group(name, parent)
+    return gid
+
+
+_reseller_group_cache = {}
+
+
+def reseller_group_id(reseller, create=False, dry_run=False):
+    """Resolve (and optionally create) the Kuma group for a reseller login.
+
+    Group name = RESELLER_GROUP_PREFIX + reseller login. Cached per run.
+    """
+    if reseller in _reseller_group_cache:
+        return _reseller_group_cache[reseller]
+
+    name = (config.get("reseller_group_prefix") or "") + reseller
+    found = find_group_by_name(name)
+    gid = None
+    if found:
+        if len(found) > 1:
+            print(f"  WARNING: multiple groups named '{name}', using ID {found[0]}")
+        gid = found[0]
+    elif create:
+        if dry_run:
+            print(f"  Would create reseller group '{name}'")
+        else:
+            parent = config.get("reseller_group_parent")
+            parent = int(parent) if parent not in (None, "", 0) else None
+            gid = create_group(name, parent)
+
+    if gid is not None:
+        _reseller_group_cache[reseller] = gid
+    return gid
+
+
+def home_group_id(info, create=False, dry_run=False):
+    """The group a domain's monitor belongs to, per GROUPING_MODE.
+
+    by-reseller: reseller-owned -> the reseller's group; admin/direct -> main.
+    flat (or unresolved reseller group): the main parent group.
+    """
+    main_gid = config["parent_group_id"]
+    if config.get("grouping_mode", "by-reseller") != "by-reseller":
+        return main_gid
+    reseller = info.get("reseller") or ""
+    if not reseller:
+        return main_gid
+    gid = reseller_group_id(reseller, create=create, dry_run=dry_run)
+    return gid if gid is not None else main_gid
+
+
+def all_http_monitors():
+    """All HTTP monitors keyed by their suffix-stripped name (across all groups).
+
+    Used to match domains to monitors regardless of which group they sit in, so
+    grouping moves and the off-server name suffix never produce duplicates.
+    """
+    out = {}
     for monitor_id, monitor in monitor_list.items():
-        if monitor.get("parent") == parent_id and monitor.get("type") == "http":
-            existing[monitor["name"]] = {
-                "id": int(monitor_id),
-                "url": monitor.get("url", "")
-            }
-    return existing
+        if monitor.get("type") != "http":
+            continue
+        raw = monitor["name"]
+        out[strip_suffix(raw)] = {
+            "id": int(monitor_id),
+            "url": monitor.get("url", ""),
+            "parent": monitor.get("parent"),
+            "active": monitor.get("active", True),
+            "name_raw": raw,
+            "bean": monitor,
+        }
+    return out
 
 
-def create_monitor(name, url):
+def create_group(name, parent=None):
+    group_data = {
+        "name": name,
+        "type": "group",
+        "interval": 60,
+        "retryInterval": 60,
+        "maxretries": 0,
+        "resendInterval": 0,
+        "active": True,
+        "parent": parent,
+        "notificationIDList": {},
+        "accepted_statuscodes": ["200-299"],
+        "conditions": [],
+        "kafkaProducerBrokers": [],
+        "rabbitmqNodes": [],
+        "kafkaProducerSaslOptions": {"mechanism": "None"},
+    }
+    response = call_with_callback("add", group_data)
+    if response and response.get("ok"):
+        gid = int(response.get("monitorID"))
+        print(f"  Created group '{name}' (ID: {gid})")
+        return gid
+    msg = response.get("msg", "Unknown error") if response else "No response"
+    print(f"  ERROR creating group '{name}': {msg}")
+    return None
+
+
+def edit_monitor(bean, **changes):
+    """Apply field changes to an existing monitor via editMonitor.
+
+    Sends the full existing bean (so unrelated settings are preserved) with the
+    given fields overridden. Returns True on success.
+    """
+    payload = dict(bean)
+    payload.update(changes)
+    response = call_with_callback("editMonitor", payload)
+    if response and response.get("ok"):
+        return True
+    msg = response.get("msg", "Unknown error") if response else "No response"
+    print(f"  ERROR editing {bean.get('name', '?')}: {msg}")
+    return False
+
+
+def create_monitor(name, url, parent_gid=None):
     notif_list = {str(nid): True for nid in config["notification_ids"]}
+    if parent_gid is None:
+        parent_gid = config["parent_group_id"]
 
     monitor_data = {
         "name": name,
@@ -175,7 +403,7 @@ def create_monitor(name, url):
         "maxredirects": config["monitor_max_redirects"],
         "resendInterval": 0,
         "active": True,
-        "parent": config["parent_group_id"],
+        "parent": parent_gid,
         "notificationIDList": notif_list,
         "accepted_statuscodes": ["200-299"],
         "expiryNotification": True,
@@ -214,6 +442,16 @@ def delete_monitor(monitor_id, name):
         return False
 
 
+def pause_monitor(monitor_id):
+    response = call_with_callback("pauseMonitor", monitor_id)
+    return bool(response and response.get("ok"))
+
+
+def resume_monitor(monitor_id):
+    response = call_with_callback("resumeMonitor", monitor_id)
+    return bool(response and response.get("ok"))
+
+
 # -----------------------------------------------------------------------------
 # Commands
 # -----------------------------------------------------------------------------
@@ -222,23 +460,33 @@ def cmd_sync(dry_run=False):
     print(f"=== {label} ===")
 
     domains = load_domains()
-    existing = get_existing_monitors()
+    # Match across every group (suffix-stripped) so nothing is recreated.
+    existing = all_http_monitors()
+    suspended_action = config.get("suspended_action", "keep")
 
-    to_create = {name: url for name, url in domains.items() if name not in existing}
+    # Don't create monitors for suspended domains when they aren't monitored.
+    to_create = {
+        name: info for name, info in domains.items()
+        if name not in existing
+        and not (info["status"] in SUSPENDED_STATUSES and suspended_action == "delete")
+    }
 
     if not to_create:
         print("  Nothing to create, all domains already monitored")
         return
 
     if dry_run:
-        for name, url in sorted(to_create.items()):
-            print(f"  Would create: {name} -> {url}")
+        for name, info in sorted(to_create.items()):
+            gid = home_group_id(info, create=False)
+            where = f"group {gid}" if gid != config["parent_group_id"] else "main group"
+            print(f"  Would create: {name} -> {info['url']} ({where})")
         print(f"\nTotal: {len(to_create)} monitor(s) to create")
         return
 
     created = 0
-    for name, url in sorted(to_create.items()):
-        if create_monitor(name, url):
+    for name, info in sorted(to_create.items()):
+        gid = home_group_id(info, create=True)
+        if create_monitor(name, info["url"], gid):
             created += 1
         time.sleep(0.2)
 
@@ -248,41 +496,159 @@ def cmd_sync(dry_run=False):
 
 
 def cmd_list():
-    print(f"=== Monitors in group (parent={config['parent_group_id']}) ===")
-    existing = get_existing_monitors()
+    print("=== HTTP monitors ===")
+    existing = all_http_monitors()
+
+    # Map group IDs to names for readable output
+    group_names = {int(mid): m.get("name", "?") for mid, m in monitor_list.items()
+                   if m.get("type") == "group"}
 
     for name, data in sorted(existing.items()):
-        print(f"  [{data['id']}] {name} - {data['url']}")
+        parent = data["parent"]
+        grp = group_names.get(parent, f"#{parent}") if parent else "(root)"
+        flag = "" if data["active"] else " [paused]"
+        print(f"  [{data['id']}] {data['name_raw']} - {data['url']}  <{grp}>{flag}")
 
     print(f"\nTotal: {len(existing)} monitor(s)")
 
 
 def cmd_cleanup(dry_run=False):
-    label = "Cleanup preview (dry-run)" if dry_run else "Removing obsolete monitors"
+    label = "Cleanup preview (dry-run)" if dry_run else "Cleanup"
     print(f"=== {label} ===")
 
     domains = load_domains()
-    existing = get_existing_monitors()
+    main_gid = config["parent_group_id"]
+    existing = all_http_monitors()
 
-    to_delete = [(data["id"], name, data["url"]) for name, data in existing.items() if name not in domains]
+    # Groups we manage: main + off-server + every reseller group in use.
+    managed = {main_gid}
+    off_gid = resolve_offserver_group(create=False)
+    if off_gid is not None:
+        managed.add(off_gid)
+    for reseller in {info["reseller"] for info in domains.values() if info["reseller"]}:
+        gid = reseller_group_id(reseller, create=False)
+        if gid is not None:
+            managed.add(gid)
 
-    if not to_delete:
-        print("  Nothing to remove")
-        return
+    # --- 1) Obsolete: managed monitor whose domain is gone from Plesk -> delete ---
+    obsolete = [(m["id"], key, m["url"]) for key, m in existing.items()
+                if key not in domains and m["parent"] in managed]
+    if obsolete:
+        for mid, key, url in obsolete:
+            if dry_run:
+                print(f"  Would delete (obsolete): [{mid}] {key} - {url}")
+            elif delete_monitor(mid, key):
+                time.sleep(0.2)
+    else:
+        print("  No obsolete monitors")
 
+    # --- 2) Resolve off-server DNS state for domains still in Plesk ---
+    offserver_action = config.get("offserver_action", "report")
+    present = [n for n in domains if n in existing]
+    if offserver_action != "off":
+        print(f"\n=== Reconciling {len(present)} monitor(s) (off-server action: {offserver_action}) ===")
+        states = resolve_states(present)
+    else:
+        states = {n: "unknown" for n in present}
+
+    # --- 3) Reconcile each monitor to its desired group / paused / name state ---
+    changed = 0
+    for name in sorted(present):
+        if reconcile_monitor(name, domains[name], existing[name],
+                             states.get(name, "unknown"), off_gid, dry_run):
+            changed += 1
+            if not dry_run:
+                time.sleep(0.2)
+
+    if not dry_run:
+        print(f"\nReconciled: {changed} monitor(s)")
+
+
+def reconcile_monitor(name, info, mon, dns_state, off_gid, dry_run):
+    """Bring one monitor to its desired state (group, paused, name suffix).
+
+    Desired state is recomputed from scratch each run, so the off-server (move/
+    pause) and suspended (pause) actions are inherently reversible: once a domain
+    is active and points home again, the monitor is moved back, resumed and
+    un-suffixed. Returns True if any change was made (or would be, in dry-run).
+    """
+    status = info["status"]
+    suspended_action = config.get("suspended_action", "keep")
+    offserver_action = config.get("offserver_action", "report")
+
+    delete = False
+    paused = False
+    suffixed = False
+    group = home_group_id(info, create=not dry_run, dry_run=dry_run)
+    reason = []
+
+    # Suspended-in-Plesk policy
+    if status in SUSPENDED_STATUSES:
+        if suspended_action == "delete":
+            delete = True
+            reason.append("suspended")
+        elif suspended_action == "pause":
+            paused = True
+            reason.append("suspended")
+
+    # Off-server policy (DNS no longer points here)
+    if dns_state == "off" and offserver_action != "off":
+        if offserver_action == "delete":
+            delete = True
+            reason.append("off-server")
+        elif offserver_action == "pause":
+            paused = True
+            suffixed = True
+            reason.append("off-server")
+        elif offserver_action == "move":
+            tgid = resolve_offserver_group(create=not dry_run, dry_run=dry_run)
+            if tgid is not None:
+                group = tgid
+            paused = True
+            suffixed = True
+            reason.append("off-server")
+        elif offserver_action == "report":
+            print(f"  off-server (report only): {name}")
+
+    # Compute the operations needed to reach the desired state
+    ops = []
+    edits = {}
+    if delete:
+        ops.append("delete")
+    else:
+        if group is not None and mon["parent"] != group:
+            edits["parent"] = group
+            ops.append("move group")
+        desired_name = name + (name_suffix() if suffixed else "")
+        if mon["name_raw"] != desired_name:
+            edits["name"] = desired_name
+            ops.append("rename")
+        if paused and mon["active"]:
+            ops.append("pause")
+        elif not paused and not mon["active"]:
+            ops.append("resume")
+
+    if not ops:
+        return False
+
+    tag = f" ({'/'.join(reason)})" if reason else ""
     if dry_run:
-        for mid, name, url in to_delete:
-            print(f"  Would delete: [{mid}] {name} - {url}")
-        print(f"\nTotal: {len(to_delete)} monitor(s) to delete")
-        return
+        print(f"  Would {', '.join(ops)}: {name}{tag}")
+        return True
 
-    deleted = 0
-    for mid, name, url in to_delete:
-        if delete_monitor(mid, name):
-            deleted += 1
-        time.sleep(0.2)
+    if delete:
+        return delete_monitor(mon["id"], name)
 
-    print(f"\nDeleted: {deleted} monitor(s)")
+    ok = True
+    if edits:
+        ok = edit_monitor(mon["bean"], **edits)
+    if ok and "pause" in ops:
+        pause_monitor(mon["id"])
+    if ok and "resume" in ops:
+        resume_monitor(mon["id"])
+    if ok:
+        print(f"  {name}{tag}: {', '.join(ops)}")
+    return ok
 
 
 def cmd_info():
