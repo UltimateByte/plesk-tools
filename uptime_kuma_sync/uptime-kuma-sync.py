@@ -476,9 +476,14 @@ def cmd_sync(dry_run=False):
         return
 
     if dry_run:
+        by_reseller = config.get("grouping_mode", "by-reseller") == "by-reseller"
+        prefix = config.get("reseller_group_prefix") or ""
         for name, info in sorted(to_create.items()):
-            gid = home_group_id(info, create=False)
-            where = f"group {gid}" if gid != config["parent_group_id"] else "main group"
+            reseller = info.get("reseller") or ""
+            if by_reseller and reseller:
+                where = f"reseller group '{prefix}{reseller}'"
+            else:
+                where = "main group"
             print(f"  Would create: {name} -> {info['url']} ({where})")
         print(f"\nTotal: {len(to_create)} monitor(s) to create")
         return
