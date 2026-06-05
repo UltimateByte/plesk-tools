@@ -316,15 +316,12 @@ def reseller_group_id(reseller, create=False, dry_run=False):
     return gid
 
 
-def group_target_spec(info, dns_state):
-    """Which group a monitor should live in, as a spec tuple.
+def owner_group_spec(info):
+    """The owner group a domain's monitor belongs to (independent of off-server).
 
-    Off-server `move` sends it to the off-server group; otherwise by-reseller
-    sends reseller-owned domains to their reseller group, everything else (admin
-    /direct customers, or flat mode) to the main group.
+    by-reseller sends reseller-owned domains to their reseller group; everything
+    else (admin/direct customers, or flat mode) to the main group.
     """
-    if dns_state == "off" and config.get("offserver_action", "report") == "move":
-        return ("offserver",)
     if config.get("grouping_mode", "by-reseller") == "by-reseller":
         reseller = info.get("reseller") or ""
         if reseller:
@@ -333,32 +330,73 @@ def group_target_spec(info, dns_state):
 
 
 def group_lookup(spec):
-    """Resolve a group spec to (gid_or_None, human label) WITHOUT creating it."""
+    """Resolve an owner group spec to (gid_or_None, human label) WITHOUT creating."""
     main_gid = config["parent_group_id"]
     if spec[0] == "reseller":
         gname = (config.get("reseller_group_prefix") or "") + spec[1]
         found = find_group_by_name(gname)
         return (found[0] if found else None), f"reseller group '{gname}'"
-    if spec[0] == "offserver":
-        return resolve_offserver_group(create=False), "off-server group"
     return main_gid, "main group"
 
 
 def ensure_group(spec):
-    """Resolve a group spec, creating the group if needed; return its id."""
+    """Resolve an owner group spec, creating the group if needed; return its id."""
     gid, _ = group_lookup(spec)
     if gid is not None:
         return gid
     if spec[0] == "reseller":
         return reseller_group_id(spec[1], create=True)
-    if spec[0] == "offserver":
-        return resolve_offserver_group(create=True)
     return config["parent_group_id"]
 
 
+def offserver_group_ids():
+    """All group ids that count as an off-server group (override id, or every
+    group named OFFSERVER_GROUP_NAME - there is one per owner when nested)."""
+    override = config.get("offserver_group_id")
+    if override not in (None, "", 0):
+        return {int(override)}
+    return set(find_group_by_name(config.get("offserver_group_name") or "Off-server"))
+
+
+def offserver_group_for(info, create=False, dry_run=False):
+    """Target off-server group for a domain (move action) -> (gid_or_None, label).
+
+    Default: a subgroup named OFFSERVER_GROUP_NAME nested under the domain's owner
+    group (reseller / main). OFFSERVER_GROUP_ID overrides with a fixed group;
+    OFFSERVER_NEST_UNDER_OWNER=false falls back to one global off-server group.
+    """
+    override = config.get("offserver_group_id")
+    if override not in (None, "", 0):
+        return int(override), "off-server group"
+
+    name = config.get("offserver_group_name") or "Off-server"
+    nested = str(config.get("offserver_nest_under_owner", "true")).strip().lower() \
+        in ("true", "1", "yes", "on")
+
+    if not nested:
+        gid = resolve_offserver_group(create=create and not dry_run)
+        return gid, f"off-server group '{name}'"
+
+    owner_spec = owner_group_spec(info)
+    owner_label = group_lookup(owner_spec)[1]
+    owner_gid = ensure_group(owner_spec) if (create and not dry_run) else group_lookup(owner_spec)[0]
+    label = f"off-server group under {owner_label}"
+    if owner_gid is None:
+        return None, label
+
+    found = [int(mid) for mid, m in monitor_list.items()
+             if m.get("type") == "group" and m.get("name") == name
+             and m.get("parent") == owner_gid]
+    if found:
+        return found[0], label
+    if create and not dry_run:
+        return create_group(name, parent=owner_gid), label
+    return None, label
+
+
 def home_group_id(info, create=False, dry_run=False):
-    """Resolve the home group id for a domain (used when creating monitors)."""
-    spec = group_target_spec(info, "unknown")
+    """Resolve the owner group id for a domain (used when creating monitors)."""
+    spec = owner_group_spec(info)
     if create and not dry_run:
         return ensure_group(spec)
     gid, _ = group_lookup(spec)
@@ -550,7 +588,7 @@ def cmd_sync(dry_run=False):
     for name, mon in existing.items():
         if name not in domains or is_tool_paused_name(mon["name_raw"]):
             continue
-        spec = group_target_spec(domains[name], "unknown")  # owner group
+        spec = owner_group_spec(domains[name])  # owner group
         tgid, label = group_lookup(spec)
         if tgid is None or mon["parent"] != tgid:
             regroups.append((name, spec, label, cur_label(mon["parent"])))
@@ -558,7 +596,7 @@ def cmd_sync(dry_run=False):
     # --- 3) Reseller groups that don't exist yet and would be created ---
     needed = set()
     for info in creates.values():
-        spec = group_target_spec(info, "unknown")
+        spec = owner_group_spec(info)
         if spec[0] == "reseller" and group_lookup(spec)[0] is None:
             needed.add(group_lookup(spec)[1])
     for _, spec, label, _ in regroups:
@@ -574,7 +612,7 @@ def cmd_sync(dry_run=False):
 
     if dry_run:
         for name, info in sorted(creates.items()):
-            print(f"  Would create: {name} -> {info['url']} ({group_lookup(group_target_spec(info, 'unknown'))[1]})")
+            print(f"  Would create: {name} -> {info['url']} ({group_lookup(owner_group_spec(info))[1]})")
         for name, spec, label, cur in sorted(regroups):
             print(f"  Would move: {name}  {cur} -> {label}")
         print(f"\nTotal: {len(creates)} to create, {len(regroups)} to regroup")
@@ -625,11 +663,9 @@ def cmd_cleanup(dry_run=False):
     main_gid = config["parent_group_id"]
     existing = all_http_monitors()
 
-    # Groups we manage: main + off-server + every reseller group in use.
+    # Groups we manage: main + every off-server (sub)group + every reseller group.
     managed = {main_gid}
-    off_gid = resolve_offserver_group(create=False)
-    if off_gid is not None:
-        managed.add(off_gid)
+    managed |= offserver_group_ids()
     for reseller in {info["reseller"] for info in domains.values() if info["reseller"]}:
         gid = reseller_group_id(reseller, create=False)
         if gid is not None:
@@ -722,24 +758,25 @@ def reconcile_state(name, info, mon, dns_state, dry_run):
         return delete_monitor(mon["id"], name)
 
     is_tp = is_tool_paused_name(mon["name_raw"])
-    off_gid = resolve_offserver_group(create=False)
+    off_ids = offserver_group_ids()
 
-    # Group moves are limited to: into the off-server group (move action), or
-    # back out of it once a domain recovers (sync re-files it afterwards).
-    move_spec = None
+    # Group moves are limited to: into the off-server (sub)group (move action),
+    # or back out to the owner group once a domain recovers (sync re-files it).
+    # move_kind is "offserver" or "owner"; resolved to an id only when applying.
+    move_kind = None
+    move_label = None
     if move_to_offgroup:
-        move_spec = ("offserver",)
-    elif is_tp and not paused and off_gid is not None and mon["parent"] == off_gid:
-        move_spec = group_target_spec(info, "unknown")
+        tgid, move_label = offserver_group_for(info, create=False)
+        if tgid is None or mon["parent"] != tgid:
+            move_kind = "offserver"
+    elif is_tp and not paused and mon["parent"] in off_ids:
+        tgid, move_label = group_lookup(owner_group_spec(info))
+        if tgid is None or mon["parent"] != tgid:
+            move_kind = "owner"
 
     ops = []
-    move_label = None
-    if move_spec is not None:
-        tgid, move_label = group_lookup(move_spec)
-        if not (tgid is not None and mon["parent"] == tgid):
-            ops.append(f"move -> {move_label}")
-        else:
-            move_spec = None
+    if move_kind is not None:
+        ops.append(f"move -> {move_label}")
 
     desired_name = name + desired_suffix
     if mon["name_raw"] != desired_name:
@@ -759,8 +796,12 @@ def reconcile_state(name, info, mon, dns_state, dry_run):
         return True
 
     edits = {}
-    if move_spec is not None:
-        gid = ensure_group(move_spec)
+    if move_kind == "offserver":
+        gid = offserver_group_for(info, create=True)[0]
+        if gid is not None and gid != mon["parent"]:
+            edits["parent"] = gid
+    elif move_kind == "owner":
+        gid = ensure_group(owner_group_spec(info))
         if gid is not None and gid != mon["parent"]:
             edits["parent"] = gid
     if mon["name_raw"] != desired_name:

@@ -55,14 +55,19 @@ print_offserver_config() {
 # resumed (and moved back to the main group).
 OFFSERVER_ACTION="report"
 
-# Off-server group (used when OFFSERVER_ACTION=move).
-# Looked up by name and auto-created if missing.
+# Off-server group (used when OFFSERVER_ACTION=move). Looked up by name and
+# auto-created if missing.
 OFFSERVER_GROUP_NAME="Off-server"
-# Override: set to a numeric group ID to use an existing group as-is
-# (no name lookup, no creation). Leave empty to use OFFSERVER_GROUP_NAME.
+# By default the off-server group is created as a SUBGROUP under each domain's
+# owner group (its reseller group, or the main group) - so an off-server domain
+# of reseller X lands in "X > Off-server". Set to false for a single global
+# off-server group instead.
+OFFSERVER_NEST_UNDER_OWNER="true"
+# Override: set to a numeric group ID to use one existing group as-is (no lookup,
+# no creation, no nesting). Leave empty to use OFFSERVER_GROUP_NAME.
 OFFSERVER_GROUP_ID=""
-# Placement when auto-creating the group: empty = top level (root),
-# or a numeric group ID to nest the off-server group under it.
+# Placement of the global off-server group when NEST_UNDER_OWNER=false: empty =
+# top level (root), or a numeric group ID to nest it under.
 OFFSERVER_GROUP_PARENT=""
 
 # Cosmetic suffix appended to a monitor's name while it is off-server (move/pause
@@ -119,6 +124,10 @@ ensure_env_keys() {
     fi
     if ! grep -q '^OFFSERVER_NAME_SUFFIX=' "$ENV_FILE"; then
         printf '\n# Cosmetic suffix on a monitor name while off-server (stripped when matching).\nOFFSERVER_NAME_SUFFIX=" [off-server]"\n' >> "$ENV_FILE"
+        added=1
+    fi
+    if ! grep -q '^OFFSERVER_NEST_UNDER_OWNER=' "$ENV_FILE"; then
+        printf '\n# Off-server group as a subgroup under each owner group (true), or one global group (false).\nOFFSERVER_NEST_UNDER_OWNER="true"\n' >> "$ENV_FILE"
         added=1
     fi
     if ! grep -q '^GROUPING_MODE=' "$ENV_FILE"; then
@@ -458,6 +467,7 @@ run_python() {
     "offserver_group_name": "${OFFSERVER_GROUP_NAME:-Off-server}",
     "offserver_group_id": ${OFFSERVER_GROUP_ID:-null},
     "offserver_group_parent": ${OFFSERVER_GROUP_PARENT:-null},
+    "offserver_nest_under_owner": "${OFFSERVER_NEST_UNDER_OWNER:-true}",
     "offserver_name_suffix": "${OFFSERVER_NAME_SUFFIX:- [off-server]}",
     "grouping_mode": "${GROUPING_MODE:-by-reseller}",
     "reseller_group_prefix": "${RESELLER_GROUP_PREFIX:-}",

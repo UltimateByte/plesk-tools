@@ -134,11 +134,17 @@ NXDOMAIN.
 
 ### Off-server group (for `move`)
 
+By default the off-server group is created as a **subgroup under each domain's
+owner group** — an off-server domain of reseller `X` lands in `X > Off-server`,
+admin/direct ones in `main > Off-server`. On recovery it is moved back out to
+its owner group.
+
 | Setting | Default | Description |
 |---|---|---|
-| `OFFSERVER_GROUP_NAME` | `Off-server` | Group looked up by name, auto-created if missing |
-| `OFFSERVER_GROUP_ID` | *(empty)* | Override: use this existing group ID as-is (no lookup/creation) |
-| `OFFSERVER_GROUP_PARENT` | *(empty)* | Where to create the group: empty = top level, or a group ID to nest under |
+| `OFFSERVER_GROUP_NAME` | `Off-server` | Off-server group name, auto-created if missing |
+| `OFFSERVER_NEST_UNDER_OWNER` | `true` | `true` = a subgroup per owner group; `false` = one global off-server group |
+| `OFFSERVER_GROUP_ID` | *(empty)* | Override: use this existing group ID as-is (no lookup/creation/nesting) |
+| `OFFSERVER_GROUP_PARENT` | *(empty)* | Placement of the global group when nesting is off: empty = top level, or a group ID |
 
 `--sync` resolves only the domains it is about to create, and **skips creating
 monitors for domains that already point elsewhere** (a domain that doesn't
